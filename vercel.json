@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "app/api/v1/chat/route.js": { "maxDuration": 30 },
+    "app/api/v1/image/route.js": { "maxDuration": 30 },
+    "app/api/v1/audio/route.js": { "maxDuration": 30 }
+  }
+}
