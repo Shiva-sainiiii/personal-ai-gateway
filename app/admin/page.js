@@ -12,8 +12,31 @@ export default function AdminPage() {
   const [msg, setMsg] = useState("");
 
   const [form, setForm] = useState({ provider: "openrouter", accountLabel: "acc1", apiKey: "", accountId: "" });
+  const [masterKeyStatus, setMasterKeyStatus] = useState(null);
+  const [generatedKeys, setGeneratedKeys] = useState(null);
+  const [generating, setGenerating] = useState(false);
 
   const headers = useCallback(() => ({ "Content-Type": "application/json", "X-Admin-Password": password }), [password]);
+
+  async function loadMasterKeyStatus() {
+    const res = await fetch("/api/admin/master-keys", { headers: headers() });
+    if (res.ok) setMasterKeyStatus((await res.json()).masterKeys);
+  }
+
+  async function generateMasterKeys(regenerate = []) {
+    setGenerating(true);
+    const res = await fetch("/api/admin/master-keys", {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ regenerate }),
+    });
+    const json = await res.json();
+    if (res.ok && Object.keys(json.generated || {}).length > 0) {
+      setGeneratedKeys(json.generated);
+    }
+    await loadMasterKeyStatus();
+    setGenerating(false);
+  }
 
   async function tryLogin(e) {
     e.preventDefault();
@@ -23,6 +46,7 @@ export default function AdminPage() {
       setAuthed(true);
       setMsg("");
       loadAll();
+      loadMasterKeyStatus();
     } else {
       setMsg("Wrong password.");
     }
@@ -90,6 +114,60 @@ export default function AdminPage() {
   return (
     <main style={{ padding: 24, maxWidth: 960, margin: "0 auto" }}>
       <h1>AI Gateway Admin</h1>
+
+      <section style={styles.card}>
+        <h2>Master Keys</h2>
+        <p style={{ opacity: 0.7, fontSize: 13 }}>
+          Ye keys tere baaki projects use karenge gateway call karne ke liye. Sirf ek baar plaintext dikhti hain — turant copy kar lena.
+        </p>
+        {masterKeyStatus && (
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Status</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {["text", "image", "audio"].map((type) => (
+                <tr key={type}>
+                  <td style={{ textTransform: "capitalize" }}>{type}</td>
+                  <td>{masterKeyStatus[type]?.configured ? "✅ Configured" : "❌ Not set"}</td>
+                  <td>
+                    {masterKeyStatus[type]?.configured && (
+                      <button
+                        onClick={() => generateMasterKeys([type])}
+                        disabled={generating}
+                        style={{ ...styles.button, background: "#7f1d1d", fontSize: 12, padding: "6px 10px" }}
+                      >
+                        Regenerate
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <button onClick={() => generateMasterKeys([])} disabled={generating} style={{ ...styles.button, marginTop: 10 }}>
+          {generating ? "Generating..." : "Generate Missing Master Keys"}
+        </button>
+
+        {generatedKeys && (
+          <div style={{ marginTop: 14, padding: 12, background: "#1a2e1a", borderRadius: 8, border: "1px solid #2e5c2e" }}>
+            <p style={{ margin: "0 0 8px", fontWeight: "bold" }}>⚠️ Abhi copy kar lo — dobara nahi dikhengi:</p>
+            {Object.entries(generatedKeys).map(([type, key]) => (
+              <div key={type} style={{ marginBottom: 8 }}>
+                <div style={{ fontSize: 12, opacity: 0.7, textTransform: "uppercase" }}>{type}</div>
+                <code style={{ display: "block", padding: 8, background: "#0b0e14", borderRadius: 6, wordBreak: "break-all", fontSize: 13 }}>
+                  {key}
+                </code>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
 
       <section style={styles.card}>
         <h2>Add API Key</h2>
@@ -256,21 +334,31 @@ export default function AdminPage() {
 const styles = {
   center: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" },
   card: {
+    position: "relative",
+    zIndex: 1,
     background: "#141922",
     border: "1px solid #232b38",
     borderRadius: 12,
     padding: 20,
     marginBottom: 20,
+    overflow: "hidden",
+    isolation: "isolate",
   },
   input: {
+    position: "relative",
+    zIndex: 1,
     padding: "10px 12px",
     borderRadius: 8,
     border: "1px solid #2a3341",
     background: "#0b0e14",
     color: "#e6e8eb",
     fontSize: 14,
+    width: "100%",
+    boxSizing: "border-box",
   },
   button: {
+    position: "relative",
+    zIndex: 1,
     padding: "10px 16px",
     borderRadius: 8,
     border: "none",

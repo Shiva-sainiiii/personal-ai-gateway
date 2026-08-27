@@ -5,8 +5,16 @@ export const metadata = {
 
 export default function RootLayout({ children }) {
   return (
-    <html lang="en">
-      <body style={{ margin: 0, fontFamily: "system-ui, -apple-system, sans-serif", background: "#0b0e14", color: "#e6e8eb" }}>
+    <html lang="en" style={{ background: "#0b0e14" }}>
+      <body
+        style={{
+          margin: 0,
+          minHeight: "100vh",
+          fontFamily: "system-ui, -apple-system, sans-serif",
+          background: "#0b0e14",
+          color: "#e6e8eb",
+        }}
+      >
         {children}
       </body>
     </html>

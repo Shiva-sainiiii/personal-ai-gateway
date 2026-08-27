@@ -166,6 +166,6 @@ function Result({ r }) {
   );
 }
 
-const box = { border: "1px solid #ddd", borderRadius: 10, padding: 16, marginBottom: 16 };
+const box = { position: "relative", zIndex: 1, isolation: "isolate", overflow: "hidden", border: "1px solid #ddd", borderRadius: 10, padding: 16, marginBottom: 16, background: "#fff" };
 const input = { display: "block", width: "100%", padding: 10, marginBottom: 8, borderRadius: 6, border: "1px solid #ccc", boxSizing: "border-box" };
 const button = { padding: "10px 16px", borderRadius: 6, border: "none", background: "#2563eb", color: "white", cursor: "pointer" };
