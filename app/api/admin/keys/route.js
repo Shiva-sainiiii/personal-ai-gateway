@@ -84,3 +84,31 @@ export async function DELETE(req) {
   await db().collection("apiKeys").doc(id).delete();
   return NextResponse.json({ ok: true });
 }
+
+// PATCH /api/admin/keys — reactivate a disabled/cooldown key without
+// deleting and re-adding it (e.g. after fixing a billing issue or rotating
+// a key on the provider's side while keeping the same encrypted value here).
+// Body: { id: "cerebras_acc1" }
+export async function PATCH(req) {
+  const auth = requireAdmin(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+
+  let body;
+  try {
+    body = await req.json();
+  } catch {
+    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
+  }
+
+  const { id } = body || {};
+  if (!id) return NextResponse.json({ error: "`id` is required." }, { status: 400 });
+
+  await db().collection("apiKeys").doc(id).update({
+    status: "active",
+    cooldownUntil: null,
+    failCount: 0,
+    lastError: null,
+  });
+
+  return NextResponse.json({ ok: true });
+}

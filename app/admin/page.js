@@ -92,6 +92,11 @@ export default function AdminPage() {
     loadAll();
   }
 
+  async function reactivateKey(id) {
+    await fetch("/api/admin/keys", { method: "PATCH", headers: headers(), body: JSON.stringify({ id }) });
+    loadAll();
+  }
+
   if (!authed) {
     return (
       <main style={styles.center}>
@@ -283,13 +288,20 @@ export default function AdminPage() {
             {keys.map((k) => (
               <tr key={k.id}>
                 <td>{k.id}</td>
-                <td>{k.status}</td>
+                <td style={{ color: k.status === "disabled" ? "#f87171" : k.status === "cooldown" ? "#facc15" : "#4ade80" }}>
+                  {k.status}
+                </td>
                 <td>{k.successCount}</td>
                 <td>{k.failCount}</td>
                 <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {k.lastError || "—"}
                 </td>
-                <td>
+                <td style={{ display: "flex", gap: 6 }}>
+                  {k.status === "disabled" && (
+                    <button onClick={() => reactivateKey(k.id)} style={{ ...styles.button, background: "#166534", fontSize: 12, padding: "6px 10px" }}>
+                      Reactivate
+                    </button>
+                  )}
                   <button onClick={() => removeKey(k.id)} style={{ ...styles.button, background: "#7f1d1d" }}>
                     Delete
                   </button>
