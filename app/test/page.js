@@ -208,9 +208,9 @@ export default function TestPage() {
           <code className="inline-code">/api/v1/image</code>
         </div>
         <p className="card-hint" style={{ marginTop: 14 }}>
-          Text se image banwata hai (Pollinations primary, Cloudflare fallback). Google AI Studio image model bhi
-          secondary attempt ke roop me try hota hai, par free-tier Google keys aksar generation entitled nahi hoti —
-          isliye niche alag se "Image Vision" section hai jahan Google reliably kaam karta hai.
+          Text se image banwata hai (Pollinations primary, Cloudflare fallback). Google AI Studio ab is pool me
+          nahi hai — free-tier Google keys ka generation quota hamesha 0 nikla (logs se confirm), so wo sirf har
+          request ko dead attempt ke saath slow karta tha. Google Vision ke liye niche "Image Vision" section use karo.
         </p>
         <div className="field-label">Master Key (Image)</div>
         <input
