@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useRef } from "react";
+import { downloadText, timestampForFilename } from "../../lib/clientExport.js";
 
 const PROVIDERS = ["openrouter", "googleAiStudio", "groq", "cerebras", "cloudflare", "pollinations"];
 const KEY_OPTIONAL_PROVIDERS = new Set(["pollinations"]);
@@ -168,6 +169,27 @@ export default function AdminPage() {
     loadAll();
   }
 
+  // Bundles everything currently on screen (keys, provider stats, model
+  // scores, recent logs) into one JSON file — so instead of screenshotting
+  // the whole page, it can just be downloaded and shared directly.
+  function downloadReport() {
+    const report = {
+      generatedAt: new Date().toISOString(),
+      last24h: stats?.last24h ?? null,
+      byProvider: stats?.byProvider ?? null,
+      modelScores: stats?.modelScores ?? null,
+      keys: keys.map((k) => ({
+        id: k.id,
+        status: k.status,
+        successCount: k.successCount,
+        failCount: k.failCount,
+        lastError: k.lastError ?? null,
+      })),
+      recentLogs: stats?.recentLogs ?? null,
+    };
+    downloadText(`ai-gateway-report-${timestampForFilename()}.json`, JSON.stringify(report, null, 2));
+  }
+
   // --- Render --------------------------------------------------------------
 
   if (authStage === "checking") {
@@ -210,9 +232,14 @@ export default function AdminPage() {
     <main className="page">
       <div className="row" style={{ justifyContent: "space-between", marginBottom: 4 }}>
         <h1 style={{ margin: 0 }}>AI Gateway Admin</h1>
-        <button onClick={logout} className="btn btn-ghost btn-sm">
-          Log out
-        </button>
+        <div className="row" style={{ gap: 8 }}>
+          <button onClick={downloadReport} disabled={!stats} className="btn btn-ghost btn-sm">
+            Download Report
+          </button>
+          <button onClick={logout} className="btn btn-ghost btn-sm">
+            Log out
+          </button>
+        </div>
       </div>
 
       <section className="card">
