@@ -32,5 +32,5 @@ export async function POST(req) {
     return NextResponse.json({ error: result.error, attempts: result.attempts }, { status: 502 });
   }
 
-  return NextResponse.json({ imageBase64: result.imageBase64, contentType: result.contentType });
+  return NextResponse.json({ imageBase64: result.imageBase64, contentType: result.contentType, provider: result.provider });
 }

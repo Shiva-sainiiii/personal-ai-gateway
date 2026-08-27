@@ -52,8 +52,8 @@ export default function TestPage() {
   }
 
   async function testAudioAuthOnly() {
-    // Just checks the master key + endpoint reachability (no mic recording in this MVP) —
-    // sends an empty-ish request so you can confirm auth works without needing a real audio file.
+    // No file selected — just checks master key + endpoint reachability with
+    // a tiny dummy payload (expect a provider-side decode error, NOT a 401).
     setLoading((l) => ({ ...l, audio: true }));
     setAudioResult(null);
     const started = Date.now();
@@ -61,7 +61,27 @@ export default function TestPage() {
       const res = await fetch("/api/v1/audio", {
         method: "POST",
         headers: { Authorization: `Bearer ${audioKey}`, "Content-Type": "audio/wav" },
-        body: new Uint8Array([0, 0, 0, 0]), // tiny dummy payload — expect a provider-side decode error, NOT a 401
+        body: new Uint8Array([0, 0, 0, 0]),
+      });
+      const json = await res.json();
+      setAudioResult({ status: res.status, ms: Date.now() - started, body: json });
+    } catch (err) {
+      setAudioResult({ error: err.message });
+    }
+    setLoading((l) => ({ ...l, audio: false }));
+  }
+
+  async function testAudioFile(file) {
+    if (!file) return;
+    setLoading((l) => ({ ...l, audio: true }));
+    setAudioResult(null);
+    const started = Date.now();
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const res = await fetch("/api/v1/audio", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${audioKey}`, "Content-Type": file.type || "audio/wav" },
+        body: arrayBuffer,
       });
       const json = await res.json();
       setAudioResult({ status: res.status, ms: Date.now() - started, body: json });
@@ -120,10 +140,10 @@ export default function TestPage() {
 
       {/* AUDIO */}
       <section style={box}>
-        <h2>3. Audio (/api/v1/audio) — auth check only</h2>
+        <h2>3. Audio (/api/v1/audio)</h2>
         <p style={{ fontSize: 13, opacity: 0.7 }}>
-          Ye sirf master key aur endpoint reachability check karta hai (dummy bytes bhejta hai) — real
-          transcription ke liye asli audio file chahiye hoti hai.
+          Asli audio file upload karo real transcription test karne ke liye, ya bina file ke sirf
+          auth/reachability check karo.
         </p>
         <input
           placeholder="MASTER_KEY_AUDIO paste karo"
@@ -131,8 +151,15 @@ export default function TestPage() {
           onChange={(e) => setAudioKey(e.target.value)}
           style={input}
         />
+        <input
+          type="file"
+          accept="audio/*"
+          onChange={(e) => testAudioFile(e.target.files?.[0])}
+          disabled={!audioKey || loading.audio}
+          style={{ ...input, padding: 8 }}
+        />
         <button onClick={testAudioAuthOnly} disabled={!audioKey || loading.audio} style={button}>
-          {loading.audio ? "Testing..." : "Test Audio Auth"}
+          {loading.audio ? "Testing..." : "Test Auth Only (no file)"}
         </button>
         {audioResult && <Result r={audioResult} />}
       </section>

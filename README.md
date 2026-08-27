@@ -131,6 +131,15 @@ const res = await fetch("https://your-app.vercel.app/api/v1/audio", {
 const { text } = await res.json();
 ```
 
+## Image aur Audio Routing (Update)
+
+Image aur Audio dono ab **Google AI Studio ko primary** provider ki tarah use karte hain, Cloudflare fallback hai:
+
+- **Image**: `gemini-2.5-flash-image` ("Nano Banana") — Google ke free tier me ~500 images/day per account milte hain, 4 accounts ke saath ~2000/day tak
+- **Audio**: `gemini-2.5-flash` (wahi model jo text ke liye use hota hai) audio ko inline data ke roop me accept karke transcribe kar sakta hai — koi alag speech-to-text API ki zaroorat nahi
+
+Isliye Cloudflare keys add karna ab **optional** hai — sirf extra fallback capacity ke liye chahiye, image/audio kaam karne ke liye zaroori nahi.
+
 ## Kaise Kaam Karta Hai Fallback Loop
 
 `lib/orchestrator.js` me provider order hai: `groq → cerebras → googleAiStudio → openrouter → cloudflare`

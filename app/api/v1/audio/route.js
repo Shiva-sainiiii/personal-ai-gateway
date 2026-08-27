@@ -27,5 +27,5 @@ export async function POST(req) {
     return NextResponse.json({ error: result.error, attempts: result.attempts }, { status: 502 });
   }
 
-  return NextResponse.json({ text: result.text });
+  return NextResponse.json({ text: result.text, provider: result.provider });
 }
