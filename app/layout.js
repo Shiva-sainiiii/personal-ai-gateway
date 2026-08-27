@@ -15,8 +15,37 @@ export default function RootLayout({ children }) {
           color: "#e6e8eb",
         }}
       >
+        <nav
+          style={{
+            position: "sticky",
+            top: 0,
+            zIndex: 100,
+            display: "flex",
+            gap: 16,
+            padding: "12px 20px",
+            background: "#141922",
+            borderBottom: "1px solid #232b38",
+          }}
+        >
+          <a href="/" style={navLinkStyle}>
+            🏠 Home
+          </a>
+          <a href="/admin" style={navLinkStyle}>
+            ⚙️ Admin
+          </a>
+          <a href="/test" style={navLinkStyle}>
+            🧪 Test
+          </a>
+        </nav>
         {children}
       </body>
     </html>
   );
 }
+
+const navLinkStyle = {
+  color: "#7dd3fc",
+  textDecoration: "none",
+  fontSize: 14,
+  fontWeight: 500,
+};
