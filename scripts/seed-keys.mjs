@@ -49,6 +49,12 @@ async function seedMasterKeys() {
   }
 }
 
+// Pollinations works on its free tier with zero keys at all, so unlike every
+// other provider it's still worth seeding a doc even when its env var is
+// blank — that's what turns the gateway's "no keys row = provider skipped"
+// check into "yes, use Pollinations, no-key mode".
+const KEY_OPTIONAL_PROVIDERS = new Set(["pollinations"]);
+
 async function seedProviderKeys() {
   const accounts = ["acc1", "acc2", "acc3", "acc4"];
   const providerEnvPrefix = {
@@ -57,14 +63,37 @@ async function seedProviderKeys() {
     groq: "GROQ",
     cerebras: "CEREBRAS",
     cloudflare: "CLOUDFLARE",
+    pollinations: "POLLINATIONS",
   };
 
   for (const [provider, prefix] of Object.entries(providerEnvPrefix)) {
+    const keyOptional = KEY_OPTIONAL_PROVIDERS.has(provider);
+
     for (const acc of accounts) {
       const envKeyName = `${prefix}_${acc.toUpperCase()}_KEY`;
       const plain = process.env[envKeyName];
+
       if (!plain) {
-        console.log(`  skip ${provider}_${acc} (${envKeyName} not set)`);
+        if (keyOptional && acc === "acc1") {
+          // Seed exactly one no-key Pollinations doc so the gateway knows to
+          // use it in no-key mode — skip acc2-4 to avoid 4 identical rows.
+          await db.collection("apiKeys").doc(`${provider}_${acc}`).set({
+            provider,
+            accountLabel: acc,
+            encryptedKey: null,
+            accountId: null,
+            status: "active",
+            cooldownUntil: null,
+            failCount: 0,
+            successCount: 0,
+            lastUsedAt: null,
+            lastError: null,
+            createdAt: FieldValue.serverTimestamp(),
+          });
+          console.log(`  wrote apiKeys/${provider}_${acc} (no-key mode — ${envKeyName} not set)`);
+        } else {
+          console.log(`  skip ${provider}_${acc} (${envKeyName} not set)`);
+        }
         continue;
       }
 

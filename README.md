@@ -131,14 +131,24 @@ const res = await fetch("https://your-app.vercel.app/api/v1/audio", {
 const { text } = await res.json();
 ```
 
-## Image aur Audio Routing (Update)
+## Image aur Audio Routing (Update 2)
 
-Image aur Audio dono ab **Google AI Studio ko primary** provider ki tarah use karte hain, Cloudflare fallback hai:
+**Bug jo fix hua**: `gemini-2.5-flash-image` ("Nano Banana") aur raw audio inline-data dono ko
+Google AI Studio ke **free-tier keys support nahi karte** — free tier sirf VISION (image ko
+*samajhna*) deta hai, image *banana* ya raw audio *transcribe karna* nahi. Isliye pehle image
+aur audio dono consistently fail ho rahe the — koi bug nahi tha, ye ek provider-tier limitation
+thi jiske against galat model assume kiya gaya tha.
 
-- **Image**: `gemini-2.5-flash-image` ("Nano Banana") — Google ke free tier me ~500 images/day per account milte hain, 4 accounts ke saath ~2000/day tak
-- **Audio**: `gemini-2.5-flash` (wahi model jo text ke liye use hota hai) audio ko inline data ke roop me accept karke transcribe kar sakta hai — koi alag speech-to-text API ki zaroorat nahi
+**Naya routing:**
 
-Isliye Cloudflare keys add karna ab **optional** hai — sirf extra fallback capacity ke liye chahiye, image/audio kaam karne ke liye zaroori nahi.
+- **Image**: `pollinations` (primary) → `googleAiStudio` (secondary, agar kabhi entitled ho) → `cloudflare` (fallback).
+  Pollinations ek dedicated free image-gen API hai (`gen.pollinations.ai/image/{prompt}`), bina
+  key ke bhi kaam karta hai — key dene se sirf rate limit badhta hai aur watermark hatta hai.
+- **Audio**: `cloudflare` Whisper (primary, purpose-built STT model) → `googleAiStudio` (secondary attempt, agar account allow kare).
+
+Cloudflare ab audio ke liye recommended hai (Whisper reliable STT hai), image ke liye still optional
+fallback hai. Pollinations key admin panel se add ki ja sakti hai — provider dropdown me "pollinations"
+select karke, apiKey field khaali chhod sakte ho (optional).
 
 ## Kaise Kaam Karta Hai Fallback Loop
 
@@ -207,6 +217,21 @@ Admin panel (`/admin`) ab **Model Scores** table bhi dikhata hai — har model k
 
 Agar zaroorat pade to Upstash abhi bhi add kar sakte hain — cache/coalescing/rate-limit ko Firestore se Upstash Redis me move karna latency thoda kam karega (Redis Firestore se fast hai), lekin abhi ke free-tier scale pe Firestore version bilkul theek chalega.
 
+## UI Update (Mobile + Admin Session Fix)
+
+- **Admin login ab session-persistent hai**: password ab `sessionStorage` me cache hota hai
+  (tab band karne tak rehta hai, disk pe kabhi save nahi hota) aur mount pe silently
+  re-validate hota hai. Matlab admin panel se test page pe jaake wapas aane par **dobara
+  password nahi maangega** — jab tak tab close na karo ya password galat/rotate na ho jaaye.
+- **Shared navbar** `next/link` use karta hai ab (client-side navigation) instead of plain
+  `<a>` tags — pehle har navigation full page reload karta tha jo hi admin-login bhi reset
+  kar deta tha.
+- **Mobile-responsive**: naya `app/globals.css` design system — cards, tables (horizontally
+  scrollable on narrow screens), buttons, forms sab chhoti screen ke liye tuned hain.
+- **Test page (MVP) strong**: master keys ab yahan bhi `sessionStorage` me cached rehti hain,
+  har request ka latency dikhta hai, fail hone par attempt-list table dikhta hai (kaunsa
+  provider/status fail hua), image preview aur raw-response collapsible section.
+
 ## File Structure
 
 ```
@@ -216,13 +241,17 @@ app/
   api/v1/audio/route.js      — audio endpoint
   api/admin/keys/route.js    — add/list/delete provider keys
   api/admin/stats/route.js   — tracking dashboard data
-  admin/page.js              — admin frontend UI
-  page.js, layout.js         — landing page
+  admin/page.js              — admin frontend UI (session-persistent login)
+  test/page.js               — MVP test console for all 3 master keys
+  page.js, layout.js         — landing page + shared root layout
+  globals.css                — shared design system (mobile-responsive)
+components/
+  Navbar.js                  — shared navbar (next/link, active-route highlighting)
 lib/
   firebaseAdmin.js           — Firestore admin client
   crypto.js                  — AES-256-GCM encrypt/decrypt, SHA-256 hash
   auth.js                    — master key + admin password checks
-  providers.js                — per-provider API call adapters
+  providers.js                — per-provider API call adapters (incl. Pollinations image)
   keyManager.js               — Firestore key fetch/update logic
   orchestrator.js              — the actual fallback loop
 scripts/

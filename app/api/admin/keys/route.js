@@ -6,7 +6,11 @@ import { FieldValue } from "firebase-admin/firestore";
 
 export const runtime = "nodejs";
 
-const VALID_PROVIDERS = ["openrouter", "googleAiStudio", "groq", "cerebras", "cloudflare"];
+const VALID_PROVIDERS = ["openrouter", "googleAiStudio", "groq", "cerebras", "cloudflare", "pollinations"];
+// Pollinations works with zero stored keys (its free no-key tier), so unlike
+// every other provider it's allowed to be added with an empty apiKey field —
+// this just records "yes, use Pollinations" / lets you upgrade to a real key later.
+const KEY_OPTIONAL_PROVIDERS = ["pollinations"];
 
 // GET /api/admin/keys — list all keys (metadata only, never decrypted values)
 export async function GET(req) {
@@ -43,7 +47,8 @@ export async function POST(req) {
   if (!accountLabel || typeof accountLabel !== "string") {
     return NextResponse.json({ error: "accountLabel (string, e.g. 'acc1') is required." }, { status: 400 });
   }
-  if (!apiKey || typeof apiKey !== "string") {
+  const keyOptional = KEY_OPTIONAL_PROVIDERS.includes(provider);
+  if (!keyOptional && (!apiKey || typeof apiKey !== "string")) {
     return NextResponse.json({ error: "apiKey (string) is required." }, { status: 400 });
   }
   if (provider === "cloudflare" && !accountId) {
@@ -51,7 +56,9 @@ export async function POST(req) {
   }
 
   const docId = `${provider}_${accountLabel}`;
-  const encryptedKey = encrypt(apiKey);
+  // Pollinations can be registered with a blank key (uses the free no-key
+  // tier); everything else always encrypts a real key.
+  const encryptedKey = apiKey ? encrypt(apiKey) : null;
 
   await db()
     .collection("apiKeys")

@@ -1,12 +1,18 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 
-const PROVIDERS = ["openrouter", "googleAiStudio", "groq", "cerebras", "cloudflare"];
+const PROVIDERS = ["openrouter", "googleAiStudio", "groq", "cerebras", "cloudflare", "pollinations"];
+const KEY_OPTIONAL_PROVIDERS = new Set(["pollinations"]);
+const SESSION_KEY = "aigateway_admin_password";
 
 export default function AdminPage() {
+  // authStage: "checking" (silent re-validate on mount) | "loggedOut" | "loggedIn"
+  const [authStage, setAuthStage] = useState("checking");
   const [password, setPassword] = useState("");
-  const [authed, setAuthed] = useState(false);
+  const [loginMsg, setLoginMsg] = useState("");
+  const [loginBusy, setLoginBusy] = useState(false);
+
   const [keys, setKeys] = useState([]);
   const [stats, setStats] = useState(null);
   const [msg, setMsg] = useState("");
@@ -15,8 +21,39 @@ export default function AdminPage() {
   const [masterKeyStatus, setMasterKeyStatus] = useState(null);
   const [generatedKeys, setGeneratedKeys] = useState(null);
   const [generating, setGenerating] = useState(false);
+  const [addingKey, setAddingKey] = useState(false);
 
-  const headers = useCallback(() => ({ "Content-Type": "application/json", "X-Admin-Password": password }), [password]);
+  // Holds the password used for authenticated requests. Kept in a ref (not
+  // just React state) so it survives re-renders without re-triggering effects.
+  const pwRef = useRef("");
+
+  const headers = useCallback(() => ({ "Content-Type": "application/json", "X-Admin-Password": pwRef.current }), []);
+
+  // --- Session persistence -------------------------------------------------
+  // Previously the admin password only lived in React state, so navigating
+  // to /test and back (a full route change) reset the component and asked
+  // for the password again every single time. Password is cached in
+  // sessionStorage (cleared when the browser tab closes — never persisted
+  // to disk) and silently re-validated against a real endpoint on mount, so
+  // a stale/rotated password still correctly falls back to the login form.
+  useEffect(() => {
+    const cached = typeof window !== "undefined" ? sessionStorage.getItem(SESSION_KEY) : null;
+    if (!cached) {
+      setAuthStage("loggedOut");
+      return;
+    }
+    pwRef.current = cached;
+    (async () => {
+      const res = await fetch("/api/admin/keys", { headers: { "X-Admin-Password": cached } });
+      if (res.ok) {
+        setAuthStage("loggedIn");
+      } else {
+        sessionStorage.removeItem(SESSION_KEY);
+        pwRef.current = "";
+        setAuthStage("loggedOut");
+      }
+    })();
+  }, []);
 
   async function loadMasterKeyStatus() {
     const res = await fetch("/api/admin/master-keys", { headers: headers() });
@@ -25,31 +62,50 @@ export default function AdminPage() {
 
   async function generateMasterKeys(regenerate = []) {
     setGenerating(true);
-    const res = await fetch("/api/admin/master-keys", {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify({ regenerate }),
-    });
-    const json = await res.json();
-    if (res.ok && Object.keys(json.generated || {}).length > 0) {
-      setGeneratedKeys(json.generated);
+    try {
+      const res = await fetch("/api/admin/master-keys", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify({ regenerate }),
+      });
+      const json = await res.json();
+      if (res.ok && Object.keys(json.generated || {}).length > 0) {
+        setGeneratedKeys(json.generated);
+      }
+      await loadMasterKeyStatus();
+    } finally {
+      setGenerating(false);
     }
-    await loadMasterKeyStatus();
-    setGenerating(false);
   }
 
   async function tryLogin(e) {
     e.preventDefault();
-    setMsg("Checking...");
-    const res = await fetch("/api/admin/keys", { headers: headers() });
-    if (res.ok) {
-      setAuthed(true);
-      setMsg("");
-      loadAll();
-      loadMasterKeyStatus();
-    } else {
-      setMsg("Wrong password.");
+    setLoginBusy(true);
+    setLoginMsg("");
+    try {
+      const res = await fetch("/api/admin/keys", { headers: { "X-Admin-Password": password } });
+      if (res.ok) {
+        pwRef.current = password;
+        sessionStorage.setItem(SESSION_KEY, password);
+        setAuthStage("loggedIn");
+        setPassword("");
+      } else {
+        setLoginMsg(res.status === 401 ? "Wrong password." : `Server error (${res.status}).`);
+      }
+    } catch (err) {
+      setLoginMsg(`Network error: ${err.message}`);
+    } finally {
+      setLoginBusy(false);
     }
+  }
+
+  function logout() {
+    sessionStorage.removeItem(SESSION_KEY);
+    pwRef.current = "";
+    setAuthStage("loggedOut");
+    setKeys([]);
+    setStats(null);
+    setMasterKeyStatus(null);
   }
 
   const loadAll = useCallback(async () => {
@@ -57,32 +113,47 @@ export default function AdminPage() {
       fetch("/api/admin/keys", { headers: headers() }),
       fetch("/api/admin/stats", { headers: headers() }),
     ]);
+    // Session may have been revoked/rotated server-side since login — bounce
+    // back to the login screen instead of silently failing forever.
+    if (keysRes.status === 401 || statsRes.status === 401) {
+      logout();
+      return;
+    }
     if (keysRes.ok) setKeys((await keysRes.json()).keys);
     if (statsRes.ok) setStats(await statsRes.json());
   }, [headers]);
 
   useEffect(() => {
-    if (authed) {
+    if (authStage === "loggedIn") {
+      loadAll();
+      loadMasterKeyStatus();
       const interval = setInterval(loadAll, 15000); // live-ish refresh every 15s
       return () => clearInterval(interval);
     }
-  }, [authed, loadAll]);
+  }, [authStage, loadAll]);
 
   async function addKey(e) {
     e.preventDefault();
+    setAddingKey(true);
     setMsg("Adding...");
-    const res = await fetch("/api/admin/keys", {
-      method: "POST",
-      headers: headers(),
-      body: JSON.stringify(form),
-    });
-    const json = await res.json();
-    if (res.ok) {
-      setMsg(`Added ${json.id}`);
-      setForm((f) => ({ ...f, apiKey: "", accountId: "" }));
-      loadAll();
-    } else {
-      setMsg(`Error: ${json.error}`);
+    try {
+      const res = await fetch("/api/admin/keys", {
+        method: "POST",
+        headers: headers(),
+        body: JSON.stringify(form),
+      });
+      const json = await res.json();
+      if (res.ok) {
+        setMsg(`✅ Added ${json.id}`);
+        setForm((f) => ({ ...f, apiKey: "", accountId: "" }));
+        loadAll();
+      } else {
+        setMsg(`❌ Error: ${json.error}`);
+      }
+    } catch (err) {
+      setMsg(`❌ Network error: ${err.message}`);
+    } finally {
+      setAddingKey(false);
     }
   }
 
@@ -97,75 +168,115 @@ export default function AdminPage() {
     loadAll();
   }
 
-  if (!authed) {
+  // --- Render --------------------------------------------------------------
+
+  if (authStage === "checking") {
     return (
-      <main style={styles.center}>
-        <form onSubmit={tryLogin} style={styles.card}>
+      <main className="center-page">
+        <div className="row muted">
+          <span className="spinner" /> Checking session...
+        </div>
+      </main>
+    );
+  }
+
+  if (authStage === "loggedOut") {
+    return (
+      <main className="center-page">
+        <form onSubmit={tryLogin} className="card" style={{ width: "100%", maxWidth: 360 }}>
           <h2>Admin Login</h2>
           <input
             type="password"
             placeholder="Admin password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
-            style={styles.input}
+            className="input"
+            autoFocus
           />
-          <button style={styles.button}>Enter</button>
-          {msg && <p style={{ color: "#f87171" }}>{msg}</p>}
+          <button className="btn" disabled={loginBusy || !password}>
+            {loginBusy ? "Checking..." : "Enter"}
+          </button>
+          {loginMsg && (
+            <p style={{ color: "var(--danger)", fontSize: 13, marginTop: 10, marginBottom: 0 }}>{loginMsg}</p>
+          )}
         </form>
       </main>
     );
   }
 
-  return (
-    <main style={{ padding: 24, maxWidth: 960, margin: "0 auto" }}>
-      <h1>AI Gateway Admin</h1>
+  const keyOptional = KEY_OPTIONAL_PROVIDERS.has(form.provider);
 
-      <section style={styles.card}>
+  return (
+    <main className="page">
+      <div className="row" style={{ justifyContent: "space-between", marginBottom: 4 }}>
+        <h1 style={{ margin: 0 }}>AI Gateway Admin</h1>
+        <button onClick={logout} className="btn btn-ghost btn-sm">
+          Log out
+        </button>
+      </div>
+
+      <section className="card">
         <h2>Master Keys</h2>
-        <p style={{ opacity: 0.7, fontSize: 13 }}>
-          Ye keys tere baaki projects use karenge gateway call karne ke liye. Sirf ek baar plaintext dikhti hain — turant copy kar lena.
+        <p className="card-hint">
+          Ye keys tere baaki projects use karenge gateway call karne ke liye. Sirf ek baar plaintext dikhti hain —
+          turant copy kar lena.
         </p>
         {masterKeyStatus && (
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th>Type</th>
-                <th>Status</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {["text", "image", "audio"].map((type) => (
-                <tr key={type}>
-                  <td style={{ textTransform: "capitalize" }}>{type}</td>
-                  <td>{masterKeyStatus[type]?.configured ? "✅ Configured" : "❌ Not set"}</td>
-                  <td>
-                    {masterKeyStatus[type]?.configured && (
-                      <button
-                        onClick={() => generateMasterKeys([type])}
-                        disabled={generating}
-                        style={{ ...styles.button, background: "#7f1d1d", fontSize: 12, padding: "6px 10px" }}
-                      >
-                        Regenerate
-                      </button>
-                    )}
-                  </td>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Status</th>
+                  <th></th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {["text", "image", "audio"].map((type) => (
+                  <tr key={type}>
+                    <td style={{ textTransform: "capitalize" }}>{type}</td>
+                    <td>{masterKeyStatus[type]?.configured ? "✅ Configured" : "❌ Not set"}</td>
+                    <td>
+                      {masterKeyStatus[type]?.configured && (
+                        <button onClick={() => generateMasterKeys([type])} disabled={generating} className="btn btn-danger btn-sm">
+                          Regenerate
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
-        <button onClick={() => generateMasterKeys([])} disabled={generating} style={{ ...styles.button, marginTop: 10 }}>
+        <button onClick={() => generateMasterKeys([])} disabled={generating} className="btn" style={{ marginTop: 12 }}>
           {generating ? "Generating..." : "Generate Missing Master Keys"}
         </button>
 
         {generatedKeys && (
-          <div style={{ marginTop: 14, padding: 12, background: "#1a2e1a", borderRadius: 8, border: "1px solid #2e5c2e" }}>
+          <div
+            style={{
+              marginTop: 14,
+              padding: 12,
+              background: "#1a2e1a",
+              borderRadius: 8,
+              border: "1px solid var(--success-border)",
+            }}
+          >
             <p style={{ margin: "0 0 8px", fontWeight: "bold" }}>⚠️ Abhi copy kar lo — dobara nahi dikhengi:</p>
             {Object.entries(generatedKeys).map(([type, key]) => (
               <div key={type} style={{ marginBottom: 8 }}>
                 <div style={{ fontSize: 12, opacity: 0.7, textTransform: "uppercase" }}>{type}</div>
-                <code style={{ display: "block", padding: 8, background: "#0b0e14", borderRadius: 6, wordBreak: "break-all", fontSize: 13 }}>
+                <code
+                  style={{
+                    display: "block",
+                    padding: 8,
+                    background: "#0b0e14",
+                    borderRadius: 6,
+                    wordBreak: "break-all",
+                    fontSize: 13,
+                  }}
+                >
                   {key}
                 </code>
               </div>
@@ -174,210 +285,197 @@ export default function AdminPage() {
         )}
       </section>
 
-      <section style={styles.card}>
+      <section className="card">
         <h2>Add API Key</h2>
-        <form onSubmit={addKey} style={{ display: "grid", gap: 10 }}>
-          <select value={form.provider} onChange={(e) => setForm({ ...form, provider: e.target.value })} style={styles.input}>
-            {PROVIDERS.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
+        <p className="card-hint">
+          Pollinations key <em>optional</em> hai — bina key ke bhi free tier chal jaayega, key dogey to rate limit
+          zyada milega aur watermark hat jaayega.
+        </p>
+        <form onSubmit={addKey} className="stack">
+          <div className="field-row two-col">
+            <select
+              value={form.provider}
+              onChange={(e) => setForm({ ...form, provider: e.target.value })}
+              className="input"
+              style={{ marginBottom: 0 }}
+            >
+              {PROVIDERS.map((p) => (
+                <option key={p} value={p}>
+                  {p}
+                </option>
+              ))}
+            </select>
+            <input
+              placeholder="accountLabel (acc1 / acc2 / acc3 / acc4)"
+              value={form.accountLabel}
+              onChange={(e) => setForm({ ...form, accountLabel: e.target.value })}
+              className="input"
+              style={{ marginBottom: 0 }}
+            />
+          </div>
           <input
-            placeholder="accountLabel (acc1 / acc2 / acc3 / acc4)"
-            value={form.accountLabel}
-            onChange={(e) => setForm({ ...form, accountLabel: e.target.value })}
-            style={styles.input}
-          />
-          <input
-            placeholder="API key"
+            placeholder={keyOptional ? "API key (optional for Pollinations)" : "API key"}
             value={form.apiKey}
             onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
-            style={styles.input}
+            className="input"
           />
           {form.provider === "cloudflare" && (
             <input
               placeholder="Cloudflare Account ID"
               value={form.accountId}
               onChange={(e) => setForm({ ...form, accountId: e.target.value })}
-              style={styles.input}
+              className="input"
             />
           )}
-          <button style={styles.button}>Add Key</button>
-          {msg && <p style={{ opacity: 0.8 }}>{msg}</p>}
+          <button className="btn" disabled={addingKey}>
+            {addingKey ? "Adding..." : "Add Key"}
+          </button>
+          {msg && <p className="muted" style={{ fontSize: 13 }}>{msg}</p>}
         </form>
       </section>
 
       {stats && (
-        <section style={styles.card}>
+        <section className="card">
           <h2>Live Stats</h2>
-          <p>
+          <p className="muted" style={{ fontSize: 14 }}>
             Last 24h: {stats.last24h.success} success / {stats.last24h.failed} failed ({stats.last24h.total} total)
           </p>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Total</th>
-                <th>Active</th>
-                <th>Cooldown</th>
-                <th>Disabled</th>
-              </tr>
-            </thead>
-            <tbody>
-              {Object.entries(stats.byProvider).map(([p, s]) => (
-                <tr key={p}>
-                  <td>{p}</td>
-                  <td>{s.total}</td>
-                  <td>{s.active || 0}</td>
-                  <td>{s.cooldown || 0}</td>
-                  <td>{s.disabled || 0}</td>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Total</th>
+                  <th>Active</th>
+                  <th>Cooldown</th>
+                  <th>Disabled</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {Object.entries(stats.byProvider).map(([p, s]) => (
+                  <tr key={p}>
+                    <td>{p}</td>
+                    <td>{s.total}</td>
+                    <td>{s.active || 0}</td>
+                    <td>{s.cooldown || 0}</td>
+                    <td>{s.disabled || 0}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 
       {stats?.modelScores?.length > 0 && (
-        <section style={styles.card}>
+        <section className="card">
           <h2>Model Scores (Self-Healing)</h2>
-          <p style={{ opacity: 0.7, fontSize: 13 }}>Higher score = tried first. Drops automatically on repeated failures.</p>
-          <table style={styles.table}>
-            <thead>
-              <tr>
-                <th>Provider</th>
-                <th>Model</th>
-                <th>Score</th>
-                <th>Avg Latency</th>
-                <th>Calls</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.modelScores.map((m) => (
-                <tr key={m.id}>
-                  <td>{m.provider}</td>
-                  <td style={{ fontSize: 12 }}>{m.model}</td>
-                  <td style={{ color: m.score > 60 ? "#4ade80" : m.score > 30 ? "#facc15" : "#f87171" }}>
-                    {m.score?.toFixed(1)}
-                  </td>
-                  <td>{m.avgLatencyMs}ms</td>
-                  <td>{m.totalCalls}</td>
+          <p className="card-hint">Higher score = tried first. Drops automatically on repeated failures.</p>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Provider</th>
+                  <th>Model</th>
+                  <th>Score</th>
+                  <th>Avg Latency</th>
+                  <th>Calls</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {stats.modelScores.map((m) => (
+                  <tr key={m.id}>
+                    <td>{m.provider}</td>
+                    <td style={{ fontSize: 12 }}>{m.model}</td>
+                    <td style={{ color: m.score > 60 ? "var(--success)" : m.score > 30 ? "var(--warn)" : "var(--danger)" }}>
+                      {m.score?.toFixed(1)}
+                    </td>
+                    <td>{m.avgLatencyMs}ms</td>
+                    <td>{m.totalCalls}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
 
-      <section style={styles.card}>
+      <section className="card">
         <h2>Keys ({keys.length})</h2>
-        <table style={styles.table}>
-          <thead>
-            <tr>
-              <th>ID</th>
-              <th>Status</th>
-              <th>Success</th>
-              <th>Fail</th>
-              <th>Last Error</th>
-              <th></th>
-            </tr>
-          </thead>
-          <tbody>
-            {keys.map((k) => (
-              <tr key={k.id}>
-                <td>{k.id}</td>
-                <td style={{ color: k.status === "disabled" ? "#f87171" : k.status === "cooldown" ? "#facc15" : "#4ade80" }}>
-                  {k.status}
-                </td>
-                <td>{k.successCount}</td>
-                <td>{k.failCount}</td>
-                <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                  {k.lastError || "—"}
-                </td>
-                <td style={{ display: "flex", gap: 6 }}>
-                  {k.status === "disabled" && (
-                    <button onClick={() => reactivateKey(k.id)} style={{ ...styles.button, background: "#166534", fontSize: 12, padding: "6px 10px" }}>
-                      Reactivate
-                    </button>
-                  )}
-                  <button onClick={() => removeKey(k.id)} style={{ ...styles.button, background: "#7f1d1d" }}>
-                    Delete
-                  </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
-
-      {stats?.recentLogs && (
-        <section style={styles.card}>
-          <h2>Recent Requests</h2>
-          <table style={styles.table}>
+        <div className="table-wrap">
+          <table className="data-table">
             <thead>
               <tr>
-                <th>Type</th>
-                <th>Provider</th>
-                <th>Model</th>
-                <th>OK</th>
-                <th>Latency</th>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Success</th>
+                <th>Fail</th>
+                <th>Last Error</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
-              {stats.recentLogs.map((l) => (
-                <tr key={l.id}>
-                  <td>{l.type}</td>
-                  <td>{l.provider}</td>
-                  <td style={{ fontSize: 12 }}>{l.model}</td>
-                  <td>{l.ok ? "✅" : "❌"}</td>
-                  <td>{l.latencyMs}ms</td>
+              {keys.map((k) => (
+                <tr key={k.id}>
+                  <td>{k.id}</td>
+                  <td>
+                    <span className={`badge badge-${k.status === "disabled" ? "disabled" : k.status === "cooldown" ? "cooldown" : "active"}`}>
+                      {k.status}
+                    </span>
+                  </td>
+                  <td>{k.successCount}</td>
+                  <td>{k.failCount}</td>
+                  <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {k.lastError || "—"}
+                  </td>
+                  <td>
+                    <div className="row" style={{ flexWrap: "nowrap" }}>
+                      {k.status === "disabled" && (
+                        <button onClick={() => reactivateKey(k.id)} className="btn btn-success btn-sm">
+                          Reactivate
+                        </button>
+                      )}
+                      <button onClick={() => removeKey(k.id)} className="btn btn-danger btn-sm">
+                        Delete
+                      </button>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      </section>
+
+      {stats?.recentLogs && (
+        <section className="card">
+          <h2>Recent Requests</h2>
+          <div className="table-wrap">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Type</th>
+                  <th>Provider</th>
+                  <th>Model</th>
+                  <th>OK</th>
+                  <th>Latency</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.recentLogs.map((l) => (
+                  <tr key={l.id}>
+                    <td>{l.type}</td>
+                    <td>{l.provider}</td>
+                    <td style={{ fontSize: 12 }}>{l.model}</td>
+                    <td>{l.ok ? "✅" : "❌"}</td>
+                    <td>{l.latencyMs}ms</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </section>
       )}
     </main>
   );
 }
-
-const styles = {
-  center: { minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" },
-  card: {
-    position: "relative",
-    zIndex: 1,
-    background: "#141922",
-    border: "1px solid #232b38",
-    borderRadius: 12,
-    padding: 20,
-    marginBottom: 20,
-    overflow: "hidden",
-    isolation: "isolate",
-  },
-  input: {
-    position: "relative",
-    zIndex: 1,
-    padding: "10px 12px",
-    borderRadius: 8,
-    border: "1px solid #2a3341",
-    background: "#0b0e14",
-    color: "#e6e8eb",
-    fontSize: 14,
-    width: "100%",
-    boxSizing: "border-box",
-  },
-  button: {
-    position: "relative",
-    zIndex: 1,
-    padding: "10px 16px",
-    borderRadius: 8,
-    border: "none",
-    background: "#2563eb",
-    color: "white",
-    cursor: "pointer",
-    fontSize: 14,
-  },
-  table: { width: "100%", borderCollapse: "collapse", fontSize: 13 },
-};
