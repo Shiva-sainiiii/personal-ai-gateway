@@ -141,22 +141,62 @@ load automatically 4 accounts me evenly spread hota hai. Koi key rate-limit (429
 to wo 10 min ke liye "cooldown" me chali jaati hai aur loop agli key/provider try karta hai.
 Sab kuch fail ho to client ko clear error milta hai with attempt list.
 
-## Phase 2 (Abhi Nahi Bana — Baad Me Add Karenge)
+## Phase 2 — Ab Sab Engines Live Hain
 
-Ye engines abhi include nahi hain, core stable hone ke baad add karenge:
-- Smart cache engine (Upstash)
-- Prompt compressor
-- Model downgrade logic
-- Token counter + cutter
-- Stream + stop engine
-- Request coalescing (Upstash)
-- Speculative prefetch
-- Adapter rate limit saver (zyada granular per-provider limits)
-- Token recycler
-- Context window slicer
-- Self-healing model scorer (auto-detect which models degrade in quality/speed and reprioritize)
+Sab 13 planned engines ab implement ho chuke hain, Firestore-backed (Upstash abhi use nahi kiya — sab kuch already existing Firestore project me chal raha hai, ek aur service add karne ki zaroorat nahi padi):
 
-Jab core gateway 1-2 din chal jaye smoothly, bata dena — inko ek-ek karke add karte hain.
+| Engine | File | Kya karta hai |
+|---|---|---|
+| Task-based routing | `lib/modelRegistry.js` | TEXT / TEXT_FALLBACK / VISION / ADDITIONAL_LIVE_POOL pools, tere diye gaye model map ke hisaab se |
+| Auto routing | `lib/orchestrator.js` (`resolvePoolOrder`) | Image ho to VISION pool, prompt bada ho (>100k tokens) to 1M-context fallback pool pehle |
+| Fallback loop | `lib/orchestrator.js` | Pool → model → key, teeno level pe fallback |
+| Smart cache engine | `lib/cache.js` | Firestore me exact-match response cache, 10 min TTL |
+| Prompt compressor | `lib/tokenTools.js` (`compressPrompt`) | Extra whitespace/filler phrases hata deta hai bina meaning badle |
+| Model downgrade | `lib/tokenTools.js` (`isSimpleRequest`) | Chhote prompts ke liye flag (future me chhote model prefer karne ke liye use ho sakta hai) |
+| Token counter + cutter | `lib/tokenTools.js` | ~4 chars/token approximation se token count |
+| Context window slicer | `lib/tokenTools.js` (`sliceToContextWindow`) | Har model ke apne context window ke hisaab se purani messages trim karta hai |
+| Stream + stop engine | `lib/streamTools.js`, `/api/v1/chat/stream` | SSE streaming response, client abort kar sakta hai |
+| Request coalescing engine | `lib/coalescer.js` | Same time pe aayi identical requests ek hi upstream call share karti hain |
+| Speculative prefetch engine | `lib/prefetch.js` | Fallback pool ki key-availability background me warm ho jaati hai |
+| Adapter rate limit saver | `lib/rateLimitSaver.js` | Groq jaise known-RPM providers ke liye proactively near-limit keys skip karta hai |
+| Token recycler engine | `lib/orchestrator.js` (`isContextLengthError`) | Context-too-long error pe automatically tighter slice se retry |
+| Self-healing model scorer | `lib/modelScorer.js` | Har model ka rolling success-rate score, best-performing model pehle try hota hai |
+
+### Naye/Updated API Endpoints
+
+```javascript
+// Text (ab vision bhi supported hai)
+const res = await fetch("https://your-app.vercel.app/api/v1/chat", {
+  method: "POST",
+  headers: { "Authorization": "Bearer YOUR_MASTER_KEY_TEXT", "Content-Type": "application/json" },
+  body: JSON.stringify({
+    messages: [{ role: "user", content: "Is image me kya hai?" }],
+    imageUrl: "https://example.com/photo.jpg" // ya imageBase64 + imageMimeType
+  })
+});
+const data = await res.json();
+console.log(data.text, data.provider, data.model, data.pool, data.cached);
+```
+
+```javascript
+// Streaming (stop engine ke saath)
+const controller = new AbortController();
+const res = await fetch("https://your-app.vercel.app/api/v1/chat/stream", {
+  method: "POST",
+  headers: { "Authorization": "Bearer YOUR_MASTER_KEY_TEXT", "Content-Type": "application/json" },
+  body: JSON.stringify({ messages: [{ role: "user", content: "Hello!" }] }),
+  signal: controller.signal
+});
+const reader = res.body.getReader();
+// ... read chunks ...
+// controller.abort() koi bhi waqt call karke stream rok sakta hai
+```
+
+Admin panel (`/admin`) ab **Model Scores** table bhi dikhata hai — har model ka live score, latency, aur total calls, jisse pata chalega konsa model best perform kar raha hai.
+
+### Agla Step (Optional, Baad Me)
+
+Agar zaroorat pade to Upstash abhi bhi add kar sakte hain — cache/coalescing/rate-limit ko Firestore se Upstash Redis me move karna latency thoda kam karega (Redis Firestore se fast hai), lekin abhi ke free-tier scale pe Firestore version bilkul theek chalega.
 
 ## File Structure
 

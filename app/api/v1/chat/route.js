@@ -6,7 +6,13 @@ export const runtime = "nodejs";
 
 // POST /api/v1/chat
 // Headers: Authorization: Bearer <MASTER_KEY_TEXT>
-// Body: { "messages": [{"role":"user","content":"hi"}], "model": "optional-preferred-model" }
+// Body: {
+//   "messages": [{"role":"user","content":"hi"}],
+//   "model": "optional-preferred-model",
+//   "imageUrl": "optional-https-url-of-an-image",       // for vision requests
+//   "imageBase64": "optional-base64-image-data",         // alternative to imageUrl
+//   "imageMimeType": "image/jpeg"                        // only used with imageBase64
+// }
 export async function POST(req) {
   const auth = await requireMasterKey(req, "text");
   if (!auth.ok) {
@@ -20,12 +26,18 @@ export async function POST(req) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
 
-  const { messages, model } = body || {};
+  const { messages, model, imageUrl, imageBase64, imageMimeType } = body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
     return NextResponse.json({ error: "`messages` must be a non-empty array." }, { status: 400 });
   }
 
-  const result = await routeTextRequest({ messages, preferredModel: model });
+  const result = await routeTextRequest({
+    messages,
+    preferredModel: model,
+    imageUrl,
+    imageBase64,
+    imageMimeType,
+  });
 
   if (!result.ok) {
     return NextResponse.json({ error: result.error, attempts: result.attempts }, { status: 502 });
@@ -35,6 +47,9 @@ export async function POST(req) {
     text: result.text,
     provider: result.provider,
     model: result.model,
+    pool: result.pool,
+    cached: result.cached || false,
+    coalesced: result.coalesced || false,
     attempts: result.attempts,
   });
 }

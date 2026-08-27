@@ -157,6 +157,37 @@ export default function AdminPage() {
         </section>
       )}
 
+      {stats?.modelScores?.length > 0 && (
+        <section style={styles.card}>
+          <h2>Model Scores (Self-Healing)</h2>
+          <p style={{ opacity: 0.7, fontSize: 13 }}>Higher score = tried first. Drops automatically on repeated failures.</p>
+          <table style={styles.table}>
+            <thead>
+              <tr>
+                <th>Provider</th>
+                <th>Model</th>
+                <th>Score</th>
+                <th>Avg Latency</th>
+                <th>Calls</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.modelScores.map((m) => (
+                <tr key={m.id}>
+                  <td>{m.provider}</td>
+                  <td style={{ fontSize: 12 }}>{m.model}</td>
+                  <td style={{ color: m.score > 60 ? "#4ade80" : m.score > 30 ? "#facc15" : "#f87171" }}>
+                    {m.score?.toFixed(1)}
+                  </td>
+                  <td>{m.avgLatencyMs}ms</td>
+                  <td>{m.totalCalls}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
+
       <section style={styles.card}>
         <h2>Keys ({keys.length})</h2>
         <table style={styles.table}>

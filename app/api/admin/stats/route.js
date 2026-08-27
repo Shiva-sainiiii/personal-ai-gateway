@@ -39,9 +39,13 @@ export async function GET(req) {
     else failCount += 1;
   });
 
+  const modelScoresSnap = await db().collection("modelScores").orderBy("score", "desc").get();
+  const modelScores = modelScoresSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+
   return NextResponse.json({
     byProvider,
     last24h: { success: successCount, failed: failCount, total: successCount + failCount },
     recentLogs,
+    modelScores,
   });
 }
