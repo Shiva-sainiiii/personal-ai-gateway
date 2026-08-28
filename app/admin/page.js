@@ -210,6 +210,9 @@ export default function AdminPage() {
       generatedAt: new Date().toISOString(),
       last24h: stats?.last24h ?? null,
       byProvider: stats?.byProvider ?? null,
+      usageByProvider: stats?.usageByProvider ?? null,
+      activeAccountsByProvider: stats?.activeAccountsByProvider ?? null,
+      dailyFreeLimits: stats?.dailyFreeLimits ?? null,
       modelScores: stats?.modelScores ?? null,
       keys: keys.map((k) => ({
         id: k.id,
@@ -423,6 +426,53 @@ export default function AdminPage() {
                 ))}
               </tbody>
             </table>
+          </div>
+        </section>
+      )}
+
+      {stats && (
+        <section className="card">
+          <h2>Free Tier Usage (Today)</h2>
+          <p className="muted" style={{ fontSize: 14 }}>
+            Har provider ka daily free limit uske active accounts ki sankhya se multiply hota hai (har account ki apni
+            alag bucket hoti hai). Rolling last-24h data hai, exact UTC-midnight reset se thoda mismatch ho sakta hai.
+          </p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16, marginTop: 14 }}>
+            {Object.entries(stats.dailyFreeLimits || {}).map(([provider, limitInfo]) => {
+              const accounts = stats.activeAccountsByProvider?.[provider] ?? 0;
+              const usage = stats.usageByProvider?.[provider] ?? { requests: 0, totalTokens: 0 };
+              if (accounts === 0 && usage.requests === 0) return null; // provider not configured at all — skip
+
+              const isTokenBased = limitInfo.unit === "tokens";
+              const used = isTokenBased ? usage.totalTokens : usage.requests;
+              const effectiveLimit = limitInfo.amount != null ? limitInfo.amount * Math.max(accounts, 1) : null;
+              const pct = effectiveLimit ? Math.min(100, Math.round((used / effectiveLimit) * 100)) : null;
+              const barColor = pct == null ? "var(--border)" : pct >= 90 ? "var(--danger)" : pct >= 60 ? "#e0a530" : "var(--success)";
+
+              return (
+                <div key={provider}>
+                  <div className="row" style={{ justifyContent: "space-between", fontSize: 13, marginBottom: 4 }}>
+                    <strong>{provider}</strong>
+                    <span className="muted">
+                      {effectiveLimit != null
+                        ? `${used.toLocaleString()} / ${effectiveLimit.toLocaleString()} ${limitInfo.unit} (${accounts} account${accounts === 1 ? "" : "s"})`
+                        : `${used.toLocaleString()} ${limitInfo.unit} used — no published daily cap`}
+                    </span>
+                  </div>
+                  <div style={{ background: "var(--border)", borderRadius: 6, height: 8, overflow: "hidden" }}>
+                    <div
+                      style={{
+                        width: pct != null ? `${pct}%` : "100%",
+                        height: "100%",
+                        background: barColor,
+                        opacity: pct == null ? 0.3 : 1,
+                      }}
+                    />
+                  </div>
+                  <p className="muted" style={{ fontSize: 11, marginTop: 3, marginBottom: 0 }}>{limitInfo.note}</p>
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
