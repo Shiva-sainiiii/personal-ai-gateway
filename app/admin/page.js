@@ -7,6 +7,38 @@ const PROVIDERS = ["openrouter", "googleAiStudio", "groq", "cerebras", "cloudfla
 const KEY_OPTIONAL_PROVIDERS = new Set(["pollinations"]);
 const SESSION_KEY = "aigateway_admin_password";
 
+// Best-effort decode of a stored lastError string into a short, human
+// readable reason. lastError is stored as JSON.stringify(providerErrorBody)
+// or a plain error message — providers don't agree on shape, so this tries
+// a few common fields before falling back to the raw text.
+function decodeErrorReason(lastError) {
+  if (!lastError) return null;
+  let parsed;
+  try {
+    parsed = JSON.parse(lastError);
+  } catch {
+    return { summary: lastError, code: null };
+  }
+  const status = parsed.status ?? parsed.code ?? null;
+  const message =
+    parsed?.error?.message ||
+    parsed?.error?.errors?.[0]?.message ||
+    parsed?.message ||
+    parsed?.errors?.[0]?.message ||
+    null;
+
+  const KNOWN = {
+    401: "Invalid/revoked API key — copy-paste galti ya key revoke ho gayi. Naya key lagao.",
+    402: "Payment required — account ka free credit/balance khatam. Naya account ya billing add karo.",
+    404: "Model not found — model ka naam badal gaya ya provider ke paas access nahi. Model list check karo.",
+    429: "Rate limited — bahut zyada requests. 10 min me apne aap theek ho jaayega (cooldown).",
+    403: "Forbidden/rate limited — key ke paas is resource ki permission nahi, ya rate limit.",
+  };
+  const known = KNOWN[status] || KNOWN[parsed?.status] || null;
+
+  return { summary: message || lastError, code: status, known };
+}
+
 export default function AdminPage() {
   // authStage: "checking" (silent re-validate on mount) | "loggedOut" | "loggedIn"
   const [authStage, setAuthStage] = useState("checking");
@@ -23,6 +55,7 @@ export default function AdminPage() {
   const [generatedKeys, setGeneratedKeys] = useState(null);
   const [generating, setGenerating] = useState(false);
   const [addingKey, setAddingKey] = useState(false);
+  const [errorModalKey, setErrorModalKey] = useState(null); // key doc currently shown in the error-detail modal
 
   // Holds the password used for authenticated requests. Kept in a ref (not
   // just React state) so it survives re-renders without re-triggering effects.
@@ -452,8 +485,21 @@ export default function AdminPage() {
                   </td>
                   <td>{k.successCount}</td>
                   <td>{k.failCount}</td>
-                  <td style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {k.lastError || "—"}
+                  <td style={{ maxWidth: 220 }}>
+                    {k.lastError ? (
+                      <button
+                        onClick={() => setErrorModalKey(k)}
+                        className="btn btn-ghost btn-sm"
+                        style={{ textAlign: "left", whiteSpace: "normal", maxWidth: "100%" }}
+                        type="button"
+                      >
+                        {decodeErrorReason(k.lastError)?.code ? `${decodeErrorReason(k.lastError).code} — ` : ""}
+                        {(decodeErrorReason(k.lastError)?.summary || k.lastError).slice(0, 40)}
+                        {(decodeErrorReason(k.lastError)?.summary || k.lastError).length > 40 ? "…" : ""}
+                      </button>
+                    ) : (
+                      "—"
+                    )}
                   </td>
                   <td>
                     <div className="row" style={{ flexWrap: "nowrap" }}>
@@ -490,11 +536,15 @@ export default function AdminPage() {
               </thead>
               <tbody>
                 {stats.recentLogs.map((l) => (
-                  <tr key={l.id}>
+                  <tr
+                    key={l.id}
+                    onClick={() => !l.ok && l.errorMessage && setErrorModalKey({ id: `${l.provider} · ${l.model}`, status: "failed", lastError: l.errorMessage })}
+                    style={!l.ok && l.errorMessage ? { cursor: "pointer" } : undefined}
+                  >
                     <td>{l.type}</td>
                     <td>{l.provider}</td>
                     <td style={{ fontSize: 12 }}>{l.model}</td>
-                    <td>{l.ok ? "✅" : "❌"}</td>
+                    <td>{l.ok ? "✅" : l.errorMessage ? "❌ (tap for detail)" : "❌"}</td>
                     <td>{l.latencyMs}ms</td>
                   </tr>
                 ))}
@@ -503,6 +553,70 @@ export default function AdminPage() {
           </div>
         </section>
       )}
+
+      {errorModalKey && (
+        <ErrorDetailModal keyDoc={errorModalKey} onClose={() => setErrorModalKey(null)} />
+      )}
     </main>
+  );
+}
+
+function ErrorDetailModal({ keyDoc, onClose }) {
+  const decoded = decodeErrorReason(keyDoc.lastError);
+  let prettyJson = keyDoc.lastError;
+  try {
+    prettyJson = JSON.stringify(JSON.parse(keyDoc.lastError), null, 2);
+  } catch {
+    // lastError wasn't JSON — show as-is
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.6)",
+        display: "flex",
+        alignItems: "flex-start",
+        justifyContent: "center",
+        padding: 20,
+        overflowY: "auto",
+        zIndex: 50,
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="card"
+        style={{ maxWidth: 560, width: "100%", marginTop: 40 }}
+      >
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <h2 style={{ margin: 0, fontSize: 16 }}>{keyDoc.id}</h2>
+            <span className={`badge badge-${keyDoc.status === "disabled" ? "disabled" : keyDoc.status === "cooldown" ? "cooldown" : "active"}`}>
+              {keyDoc.status}
+            </span>
+          </div>
+          <button onClick={onClose} className="btn btn-ghost btn-sm" type="button">
+            Close
+          </button>
+        </div>
+
+        {decoded?.code && (
+          <p style={{ marginTop: 14 }}>
+            <strong>HTTP Status:</strong> {decoded.code}
+          </p>
+        )}
+        {decoded?.known && (
+          <p style={{ color: "var(--danger)", fontWeight: 600 }}>{decoded.known}</p>
+        )}
+        {!decoded?.known && decoded?.summary && (
+          <p style={{ marginTop: 6 }}>{decoded.summary}</p>
+        )}
+
+        <div className="field-label" style={{ marginTop: 12 }}>Raw error (full)</div>
+        <pre style={{ maxHeight: 300, overflow: "auto" }}>{prettyJson}</pre>
+      </div>
+    </div>
   );
 }
