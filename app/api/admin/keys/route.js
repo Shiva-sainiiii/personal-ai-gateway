@@ -14,7 +14,7 @@ const KEY_OPTIONAL_PROVIDERS = ["pollinations"];
 
 // GET /api/admin/keys — list all keys (metadata only, never decrypted values)
 export async function GET(req) {
-  const auth = requireAdmin(req);
+  const auth = await requireAdmin(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const snap = await db().collection("apiKeys").get();
@@ -29,7 +29,7 @@ export async function GET(req) {
 // POST /api/admin/keys — add a new key from the frontend form
 // Body: { provider, accountLabel, apiKey, accountId? }
 export async function POST(req) {
-  const auth = requireAdmin(req);
+  const auth = await requireAdmin(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   let body;
@@ -82,7 +82,7 @@ export async function POST(req) {
 
 // DELETE /api/admin/keys?id=openrouter_acc1
 export async function DELETE(req) {
-  const auth = requireAdmin(req);
+  const auth = await requireAdmin(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const id = new URL(req.url).searchParams.get("id");
@@ -97,7 +97,7 @@ export async function DELETE(req) {
 // a key on the provider's side while keeping the same encrypted value here).
 // Body: { id: "cerebras_acc1" }
 export async function PATCH(req) {
-  const auth = requireAdmin(req);
+  const auth = await requireAdmin(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   let body;

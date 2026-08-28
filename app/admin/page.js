@@ -55,6 +55,8 @@ export default function AdminPage() {
   const [generatedKeys, setGeneratedKeys] = useState(null);
   const [generating, setGenerating] = useState(false);
   const [addingKey, setAddingKey] = useState(false);
+  const [pruning, setPruning] = useState(false);
+  const [pruneMsg, setPruneMsg] = useState("");
   const [errorModalKey, setErrorModalKey] = useState(null); // key doc currently shown in the error-detail modal
 
   // Holds the password used for authenticated requests. Kept in a ref (not
@@ -123,6 +125,12 @@ export default function AdminPage() {
         sessionStorage.setItem(SESSION_KEY, password);
         setAuthStage("loggedIn");
         setPassword("");
+      } else if (res.status === 429) {
+        // New: repeated wrong passwords now lock out admin login server-side
+        // for a while (was previously unlimited guesses). Surface the
+        // server's own message since it includes the remaining wait time.
+        const json = await res.json().catch(() => null);
+        setLoginMsg(json?.error || "Too many attempts. Try again later.");
       } else {
         setLoginMsg(res.status === 401 ? "Wrong password." : `Server error (${res.status}).`);
       }
@@ -202,6 +210,25 @@ export default function AdminPage() {
     loadAll();
   }
 
+  async function pruneDeadModels() {
+    setPruning(true);
+    setPruneMsg("");
+    try {
+      const res = await fetch("/api/admin/stats?pruneDeadModels=true", { method: "DELETE", headers: headers() });
+      const json = await res.json();
+      if (res.ok) {
+        setPruneMsg(`✅ Removed ${json.deletedCount} orphaned score${json.deletedCount === 1 ? "" : "s"}.`);
+        loadAll();
+      } else {
+        setPruneMsg(`❌ ${json.error}`);
+      }
+    } catch (err) {
+      setPruneMsg(`❌ Network error: ${err.message}`);
+    } finally {
+      setPruning(false);
+    }
+  }
+
   // Bundles everything currently on screen (keys, provider stats, model
   // scores, recent logs) into one JSON file — so instead of screenshotting
   // the whole page, it can just be downloaded and shared directly.
@@ -264,6 +291,14 @@ export default function AdminPage() {
 
   const keyOptional = KEY_OPTIONAL_PROVIDERS.has(form.provider);
 
+  // Providers where every configured key is disabled (permanently failed) —
+  // this provider contributes zero capacity to the gateway right now until
+  // someone fixes/re-adds a key. Surfaced as a banner so it's visible at a
+  // glance instead of only discoverable by reading the Keys table row by row.
+  const fullyDownProviders = stats
+    ? Object.entries(stats.byProvider).filter(([, s]) => s.total > 0 && (s.active || 0) === 0 && (s.cooldown || 0) === 0)
+    : [];
+
   return (
     <main className="page">
       <div className="row" style={{ justifyContent: "space-between", marginBottom: 4 }}>
@@ -277,6 +312,19 @@ export default function AdminPage() {
           </button>
         </div>
       </div>
+
+      {fullyDownProviders.length > 0 && (
+        <div
+          className="result-box result-fail"
+          style={{ marginBottom: 18, display: "flex", alignItems: "center", gap: 10 }}
+        >
+          <span style={{ fontSize: 18 }}>🔴</span>
+          <div>
+            <strong>Provider{fullyDownProviders.length > 1 ? "s" : ""} fully down:</strong>{" "}
+            {fullyDownProviders.map(([p]) => p).join(", ")} — sab keys disabled hain, is provider se koi capacity nahi mil rahi. Keys table me neeche "Reactivate" se fix karo (naya key add karne ke baad).
+          </div>
+        </div>
+      )}
 
       <section className="card">
         <h2>Master Keys</h2>
@@ -479,8 +527,20 @@ export default function AdminPage() {
 
       {stats?.modelScores?.length > 0 && (
         <section className="card">
-          <h2>Model Scores (Self-Healing)</h2>
-          <p className="card-hint">Higher score = tried first. Drops automatically on repeated failures.</p>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <h2 style={{ marginBottom: 4 }}>Model Scores (Self-Healing)</h2>
+              <p className="card-hint" style={{ marginTop: 0 }}>
+                Higher score = tried first. Score is the success rate over each model's last 20 calls — one failure
+                barely moves it, a consistently-failing model still drops fast.
+              </p>
+            </div>
+            {stats.modelScores.some((m) => !m.isKnownModel) && (
+              <button onClick={pruneDeadModels} disabled={pruning} className="btn btn-ghost btn-sm" style={{ whiteSpace: "nowrap" }}>
+                {pruning ? "Pruning..." : "Prune Dead Models"}
+              </button>
+            )}
+          </div>
           <div className="table-wrap">
             <table className="data-table">
               <thead>
@@ -494,9 +554,16 @@ export default function AdminPage() {
               </thead>
               <tbody>
                 {stats.modelScores.map((m) => (
-                  <tr key={m.id}>
+                  <tr key={m.id} style={!m.isKnownModel ? { opacity: 0.5 } : undefined}>
                     <td>{m.provider}</td>
-                    <td style={{ fontSize: 12 }}>{m.model}</td>
+                    <td style={{ fontSize: 12 }}>
+                      {m.model}
+                      {!m.isKnownModel && (
+                        <span className="muted" style={{ marginLeft: 6, fontSize: 11 }}>
+                          (removed from registry)
+                        </span>
+                      )}
+                    </td>
                     <td style={{ color: m.score > 60 ? "var(--success)" : m.score > 30 ? "var(--warn)" : "var(--danger)" }}>
                       {m.score?.toFixed(1)}
                     </td>
@@ -507,6 +574,7 @@ export default function AdminPage() {
               </tbody>
             </table>
           </div>
+          {pruneMsg && <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>{pruneMsg}</p>}
         </section>
       )}
 

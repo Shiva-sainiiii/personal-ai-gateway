@@ -2,13 +2,26 @@ import { NextResponse } from "next/server";
 import { requireAdmin } from "../../../../lib/auth.js";
 import { db } from "../../../../lib/firebaseAdmin.js";
 import { DAILY_FREE_LIMITS } from "../../../../lib/usageLimits.js";
+import { MODEL_REGISTRY } from "../../../../lib/modelRegistry.js";
 
 export const runtime = "nodejs";
+
+// All (provider, model) pairs currently listed anywhere in MODEL_REGISTRY —
+// used to flag modelScores docs whose model has since been removed from the
+// registry (e.g. deprecated by the provider) so the admin UI can offer to
+// prune them instead of them accumulating as permanent dead entries.
+function knownModelIds() {
+  const ids = new Set();
+  for (const pool of Object.values(MODEL_REGISTRY)) {
+    for (const entry of pool) ids.add(`${entry.provider}__${entry.model}`.replace(/\//g, "-"));
+  }
+  return ids;
+}
 
 // GET /api/admin/stats — summary for the tracking dashboard:
 // key counts per provider, active/cooldown/disabled breakdown, recent request logs.
 export async function GET(req) {
-  const auth = requireAdmin(req);
+  const auth = await requireAdmin(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const keysSnap = await db().collection("apiKeys").get();
@@ -58,7 +71,8 @@ export async function GET(req) {
   });
 
   const modelScoresSnap = await db().collection("modelScores").orderBy("score", "desc").get();
-  const modelScores = modelScoresSnap.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+  const known = knownModelIds();
+  const modelScores = modelScoresSnap.docs.map((doc) => ({ id: doc.id, ...doc.data(), isKnownModel: known.has(doc.id) }));
 
   return NextResponse.json({
     byProvider,
@@ -69,5 +83,28 @@ export async function GET(req) {
     activeAccountsByProvider,
     dailyFreeLimits: DAILY_FREE_LIMITS,
   });
+}
+
+// DELETE /api/admin/stats?pruneDeadModels=true
+// Removes modelScores docs whose (provider, model) pair is no longer in
+// MODEL_REGISTRY — e.g. a model the provider deprecated and that was
+// migrated away from in the registry, but whose old score doc was never
+// cleaned up (previously there was no cleanup path for this at all).
+export async function DELETE(req) {
+  const auth = await requireAdmin(req);
+  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+
+  const pruneDeadModels = new URL(req.url).searchParams.get("pruneDeadModels") === "true";
+  if (!pruneDeadModels) {
+    return NextResponse.json({ error: "Nothing to do — pass ?pruneDeadModels=true." }, { status: 400 });
+  }
+
+  const known = knownModelIds();
+  const snap = await db().collection("modelScores").get();
+  const deletable = snap.docs.filter((doc) => !known.has(doc.id));
+
+  await Promise.all(deletable.map((doc) => doc.ref.delete()));
+
+  return NextResponse.json({ ok: true, deletedCount: deletable.length, deletedIds: deletable.map((d) => d.id) });
 }
 

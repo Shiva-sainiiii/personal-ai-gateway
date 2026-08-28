@@ -29,6 +29,18 @@ Tera Project --Bearer MASTER_KEY_TEXT--> /api/v1/chat
 
 ⚠️ **Important**: Tune jo Firebase web config (apiKey, authDomain, etc.) pehle share kiya tha, wo "public" config hota hai — lekin uski security Firestore Rules par depend karti hai. Rules publish karna mat bhoolna.
 
+### Composite Indexes (zaroori — pehli deploy pe error dega warna)
+
+Ye gateway kai jagah compound Firestore queries use karta hai jinko ek **composite index** chahiye hota hai (Firestore single-field indexes automatically bana deta hai, compound wale nahi). Pehli baar jab in queries me se koi bhi chalegi (chahe API call se ho ya admin panel se), Firestore ek error dega jisme **seedha ek link** hoga jo one-click index create kar deta hai — bas wo link click karo, "Create Index" dabao, 1-2 min wait karo, phir dobara try karo.
+
+Queries jinko index chahiye honge:
+- `apiKeys`: `provider ==` + `status in [...]` (har request pe — `getActiveKeysForProvider`)
+- `requestLogs`: `createdAt >=` alone (admin stats dashboard ke liye — auto-index ho sakta hai)
+- `requestLogs`: `keyId in [...]` + `createdAt >=` (naya — rate-limit-saver ke liye, Groq/OpenRouter par)
+- `modelScores`: `orderBy("score", "desc")` (admin stats — auto-index)
+
+Agar chaho to sab pehle se create kar sakte ho `firebase deploy --only firestore:indexes` se (agar Firebase CLI use kar rahe ho) — lekin normally error-link se click-through karna hi sabse aasan raasta hai, koi CLI setup ki zaroorat nahi.
+
 ## Step 2 — Generate Secrets
 
 Apne local machine ya any terminal me (Node.js chahiye):
@@ -171,7 +183,6 @@ Sab 13 planned engines ab implement ho chuke hain, Firestore-backed (Upstash abh
 | Fallback loop | `lib/orchestrator.js` | Pool → model → key, teeno level pe fallback |
 | Smart cache engine | `lib/cache.js` | Firestore me exact-match response cache, 10 min TTL |
 | Prompt compressor | `lib/tokenTools.js` (`compressPrompt`) | Extra whitespace/filler phrases hata deta hai bina meaning badle |
-| Model downgrade | `lib/tokenTools.js` (`isSimpleRequest`) | Chhote prompts ke liye flag (future me chhote model prefer karne ke liye use ho sakta hai) |
 | Token counter + cutter | `lib/tokenTools.js` | ~4 chars/token approximation se token count |
 | Context window slicer | `lib/tokenTools.js` (`sliceToContextWindow`) | Har model ke apne context window ke hisaab se purani messages trim karta hai |
 | Stream + stop engine | `lib/streamTools.js`, `/api/v1/chat/stream` | SSE streaming response, client abort kar sakta hai |
@@ -212,6 +223,32 @@ const reader = res.body.getReader();
 ```
 
 Admin panel (`/admin`) ab **Model Scores** table bhi dikhata hai — har model ka live score, latency, aur total calls, jisse pata chalega konsa model best perform kar raha hai.
+
+## Bug Fixes Round 2
+
+Deep code review ke baad ye bugs fix hue (koi purana feature hataya nahi, sab existing behavior ke saath backward-compatible hai):
+
+1. **`/api/v1/chat/stream` me CORS missing tha** — baaki 3 routes (`chat`, `image`, `audio`) already `lib/cors.js` use kar rahe the, ye chautha route reh gaya tha. Browser se cross-origin call karne pe preflight silently fail hota tha. Fix ho gaya.
+2. **Timing-safe compare wire nahi tha** — `lib/crypto.js` me `safeEqual()` (constant-time compare) pehle se ban chuka tha, lekin `lib/auth.js` plain `!==`/`===` use kar raha tha master-key aur admin-password dono checks me. Ab dono jagah `safeEqual()` use hota hai.
+3. **Admin login pe brute-force lockout nahi tha** — koi bhi unlimited password guesses try kar sakta tha. Ab Firestore-backed lockout hai (`adminLockout` collection): 8 galat attempts ke baad 15 min ke liye admin panel lock ho jaata hai. Login form ye message bhi dikhata hai ab.
+4. **403 hamesha "rate limit" treat hota tha, kabhi "permanent" nahi** — kuch providers (jaise Google AI Studio) 403 "quota permanently 0 hai is project ke liye" ke liye bhi bhejte hain, na ki sirf rate-limit ke liye. Pehle aisi key har 10 min me dobara try hoti rahti thi forever. Ab consecutive-403 counter hai (`markKeyFailure403`) — 5 lagatar 403 (bina beech me ek bhi success ke) ke baad key automatically disable ho jaati hai, jaisa 401/402/404 ke saath already hota tha.
+5. **Prompt compressor context-blind tha** — "Please note that **our meeting is at 5pm**" jaisa real content wala message bhi "please note that" ko blindly strip kar deta tha kahin se bhi match ho, chahe wo real content ka hissa ho. Ab sirf sentence-opening filler transitions strip hoti hain ("Please note that, ..." start of message/sentence me), mid-sentence embedded matches ko chhod diya jaata hai.
+6. **Self-healing scorer bahut volatile tha** — pehle ek hi failure se score 100→15 crash ho jaata tha (single-sample exponential moving average, 0.85 decay), aur recovery bhi kabhi stable nahi hota tha. Ab last 20 outcomes ka rolling success-rate use hota hai — ek transient failure ab score ko barely move karta hai, jabki genuinely-failing model still fast drop hota hai.
+7. **Speculative prefetch dead code tha** — `prefetchPoolKeys()` call ho raha tha har request pe, lekin uska result kahin consume nahi hota tha — pure wasted Firestore read tha. Ab properly wired hai (8s freshness TTL ke saath safety ke liye), real latency benefit deta hai fallback pool try karte waqt.
+8. **`rateLimitSaver` me sirf Groq tha, OpenRouter missing** — OpenRouter ka 50 req/day per-account cap bhi exactly is tarah ka hard limit hai jiske liye ye module bana tha. Ab OpenRouter bhi included hai (24h window). Saath hi, pehle har key ke liye alag Firestore query chalti thi (N reads per request) — ab ek hi batched query provider ke saare keys ke liye.
+9. **`responseCache` aur `inFlight` docs kabhi delete nahi hote the** — comment "let it expire naturally" bolta tha lekin koi actual delete code nahi tha. Ab dono jagah best-effort delete add hua hai (expired cache-read pe, aur coalescer lock release ke kuch der baad) — ye partial fix hai; poora fix ke liye Firestore TTL policy console se set karo (niche "Firestore Cleanup" section dekho).
+10. **Dead code hataya**: `isSimpleRequest` (kabhi call nahi hota tha) aur `providersForKind` (kabhi call nahi hota tha, aur agar hota to galat result deta — `kind === "mixed"` providers ko bhi image-capable maan leta jabki unme `generateImage` implement hi nahi hai).
+
+## Firestore Cleanup (TTL Policy Setup — Optional Lekin Recommended)
+
+Code-level best-effort deletes (upar #9) sirf un docs ko clean karte hain jo **dobara** access hote hain (ek expired cache-entry ko doosri baar dhoondha jaaye tab delete hoti hai). Ek prompt jo sirf ek hi baar use hua ho, uska cache-doc kabhi dobara access nahi hoga, isliye wo hamesha reh jaayega — is case ke liye Firestore ka apna **TTL (Time-To-Live) policy** feature use karo, jo automatically purane docs delete karta hai bina kisi code ke:
+
+1. Firebase Console → Firestore Database → **TTL** tab (ya Google Cloud Console → Firestore → TTL Policies)
+2. `responseCache` collection ke liye: field `expiresAt` par TTL policy add karo
+3. `inFlight` collection ke liye: field `claimedAt` par TTL policy add karo (isse ~1 din purane abandoned locks bhi clean ho jaayenge)
+4. Optional: `requestLogs` collection ke liye bhi ek TTL policy add kar sakte ho agar purane logs nahi chahiye (jaise `createdAt` par 30-din TTL) — isse admin stats dashboard bhi fast rahega jaise-jaise data badhega
+
+TTL policy free hai aur setup ke baad kuch bhi extra karne ki zaroorat nahi — Firestore khud background me expired docs clean karta rehta hai (usually 24 ghante ke andar, exact time guaranteed nahi hota lekin eventual hai).
 
 ### Agla Step (Optional, Baad Me)
 

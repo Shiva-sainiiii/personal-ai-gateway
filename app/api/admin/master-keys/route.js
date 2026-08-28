@@ -11,7 +11,7 @@ const TYPES = ["text", "image", "audio"];
 
 // GET /api/admin/master-keys — shows which types are configured (never returns the plaintext/hash)
 export async function GET(req) {
-  const auth = requireAdmin(req);
+  const auth = await requireAdmin(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const results = {};
@@ -29,7 +29,7 @@ export async function GET(req) {
 // Body (optional): { "regenerate": ["text"] } to force-regenerate specific types
 // even if already configured (this invalidates the old key for that type).
 export async function POST(req) {
-  const auth = requireAdmin(req);
+  const auth = await requireAdmin(req);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   let body = {};
