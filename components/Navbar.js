@@ -15,7 +15,13 @@ export default function Navbar() {
   return (
     <nav className="navbar">
       <Link href="/" className="navbar-brand">
-        <span>🌐</span>
+        <img
+          src="/icon-32x32.png"
+          alt="AI Gateway logo"
+          width={22}
+          height={22}
+          style={{ borderRadius: 5, display: "block" }}
+        />
         <span className="brand-text">AI Gateway</span>
       </Link>
       <div className="navbar-links">
