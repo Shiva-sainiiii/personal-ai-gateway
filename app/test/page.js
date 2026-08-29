@@ -3,20 +3,25 @@
 import { useState, useEffect } from "react";
 import { copyText, downloadText, timestampForFilename } from "../../lib/clientExport.js";
 
-// Keys are cached in sessionStorage purely for local testing convenience —
-// cleared when the tab closes, never sent anywhere except this gateway.
+// Keys are cached in localStorage — persists across tabs and browser
+// restarts on this device (unlike sessionStorage, which cleared on every
+// tab close and meant re-pasting all 3 master keys every single test
+// session). Still device-local only, never sent anywhere except this
+// gateway's own API — same trust boundary as before, just longer-lived.
+// A "Clear saved keys" button (below) lets you wipe them from this browser
+// on demand, e.g. before using a shared/public device.
 const STORAGE_KEYS = { text: "aigateway_test_textKey", image: "aigateway_test_imageKey", audio: "aigateway_test_audioKey" };
 
 function useStoredKey(storageKey) {
   const [value, setValue] = useState("");
   useEffect(() => {
-    const cached = sessionStorage.getItem(storageKey);
+    const cached = localStorage.getItem(storageKey);
     if (cached) setValue(cached);
   }, [storageKey]);
   function update(next) {
     setValue(next);
-    if (next) sessionStorage.setItem(storageKey, next);
-    else sessionStorage.removeItem(storageKey);
+    if (next) localStorage.setItem(storageKey, next);
+    else localStorage.removeItem(storageKey);
   }
   return [value, update];
 }
@@ -251,18 +256,36 @@ export default function TestPage() {
 
   const allKeysGiven = textKey && imageKey && audioKey;
 
+  function clearSavedKeys() {
+    if (!confirm("Saare saved master keys is browser se hata dein? Dobara paste karni padengi.")) return;
+    setTextKey("");
+    setImageKey("");
+    setAudioKey("");
+  }
+
   return (
     <main className="page">
-      <h1>Gateway MVP Test</h1>
-      <p className="muted">
-        Apni teeno master keys yahan paste karo — sirf is browser tab me rehti hain (session khatam hote hi clear ho
-        jaati hain), server pe kahin save nahi hoti. Har endpoint independently test ho sakta hai.
-      </p>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
+        <div>
+          <h1 style={{ marginBottom: 4 }}>Gateway MVP Test</h1>
+          <p className="muted" style={{ margin: 0 }}>
+            Apni teeno master keys ek baar yahan paste karo — is browser me saved rehti hain (localStorage — tab band
+            karne ya restart karne pe bhi yaad rahengi), server pe kahin save nahi hoti. Har endpoint independently
+            test ho sakta hai.
+          </p>
+        </div>
+        {allKeysGiven && (
+          <button onClick={clearSavedKeys} className="btn btn-ghost btn-sm" style={{ whiteSpace: "nowrap" }}>
+            Clear Saved Keys
+          </button>
+        )}
+      </div>
 
       {!allKeysGiven && (
-        <div className="result-box" style={{ background: "rgba(250, 204, 21, 0.08)", borderColor: "#5c5324", marginBottom: 18 }}>
-          ⚠️ Teeno keys daalne ke baad hi puri tarah test ho payega. Admin panel se{" "}
-          <code className="inline-code">Generate Missing Master Keys</code> se mil jaayengi.
+        <div className="result-box" style={{ background: "rgba(250, 204, 21, 0.08)", borderColor: "#5c5324", marginBottom: 18, marginTop: 14 }}>
+          ⚠️ Teeno keys daalne ke baad hi puri tarah test ho payega (ek baar daalne ke baad dobara nahi maangega — is
+          browser me save ho jaayengi). Admin panel se <code className="inline-code">Generate Missing Master Keys</code>{" "}
+          se mil jaayengi.
         </div>
       )}
 
@@ -516,6 +539,22 @@ function Result({ r, filePrefix = "result" }) {
           </div>
           {!ok && r.body?.error && (
             <p style={{ color: "var(--danger)", fontWeight: 600, margin: "8px 0 0" }}>{String(r.body.error)}</p>
+          )}
+          {ok && (r.body?.pool || r.body?.model) && (
+            // Routing transparency: shows which complexity tier this request was
+            // classified as and which pool/model actually served it — makes the
+            // complexity-based routing (SIMPLE vs TEXT vs TEXT_COMPLEX) visible
+            // instead of a black box.
+            <div className="row" style={{ gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+              {r.body.complexity && <span className="badge badge-active">complexity: {r.body.complexity}</span>}
+              {r.body.pool && <span className="badge badge-active">pool: {r.body.pool}</span>}
+              {r.body.provider && <span className="badge badge-active">{r.body.provider}</span>}
+              {r.body.model && (
+                <span className="muted" style={{ fontSize: 12 }}>
+                  {r.body.model}
+                </span>
+              )}
+            </div>
           )}
           {!ok && Array.isArray(r.body?.attempts) && r.body.attempts.length > 0 && (
             <div style={{ marginTop: 8 }}>

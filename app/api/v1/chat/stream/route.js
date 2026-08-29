@@ -70,7 +70,19 @@ export async function POST(req) {
   });
 
   if (streamResult.ok) {
-    return withCors(new Response(streamResult.stream, { headers: sseHeaders() }));
+    // Routing transparency headers — mirrors what the non-streaming /chat
+    // response includes in its JSON body (pool/model/complexity), so a
+    // client can see how this request got routed without parsing the SSE
+    // stream itself. Custom headers are prefixed X-Gateway- to avoid any
+    // collision with standard/CORS headers.
+    const headers = {
+      ...sseHeaders(),
+      "X-Gateway-Pool": streamResult.meta?.pool || "",
+      "X-Gateway-Complexity": streamResult.meta?.complexity || "",
+      "X-Gateway-Provider": streamResult.meta?.provider || "",
+      "X-Gateway-Model": streamResult.meta?.model || "",
+    };
+    return withCors(new Response(streamResult.stream, { headers }));
   }
 
   const result = await routeTextRequest({
@@ -90,5 +102,15 @@ export async function POST(req) {
     );
   }
 
-  return withCors(new Response(encodeAsSSE(result.text), { headers: sseHeaders() }));
+  return withCors(
+    new Response(encodeAsSSE(result.text), {
+      headers: {
+        ...sseHeaders(),
+        "X-Gateway-Pool": result.pool || "",
+        "X-Gateway-Complexity": result.complexity || "",
+        "X-Gateway-Provider": result.provider || "",
+        "X-Gateway-Model": result.model || "",
+      },
+    })
+  );
 }

@@ -239,6 +239,45 @@ Deep code review ke baad ye bugs fix hue (koi purana feature hataya nahi, sab ex
 9. **`responseCache` aur `inFlight` docs kabhi delete nahi hote the** — comment "let it expire naturally" bolta tha lekin koi actual delete code nahi tha. Ab dono jagah best-effort delete add hua hai (expired cache-read pe, aur coalescer lock release ke kuch der baad) — ye partial fix hai; poora fix ke liye Firestore TTL policy console se set karo (niche "Firestore Cleanup" section dekho).
 10. **Dead code hataya**: `isSimpleRequest` (kabhi call nahi hota tha) aur `providersForKind` (kabhi call nahi hota tha, aur agar hota to galat result deta — `kind === "mixed"` providers ko bhi image-capable maan leta jabki unme `generateImage` implement hi nahi hai).
 
+## Round 5 — Test Page Master Keys Ab Persistent
+
+**Problem**: test page pe master keys `sessionStorage` me save hoti thi — matlab browser tab band karte hi (ya restart pe) clear ho jaati thi, isliye har naye session me teeno keys dobara paste karni padti thi.
+
+**Kyun server-side auto-fill possible nahi hai**: master keys Firestore me sirf **SHA-256 hash** ke roop me store hoti hain, plaintext kabhi nahi (`app/api/admin/master-keys/route.js` dekho) — ye jaan-bujh kar kiya gaya security design hai. Isliye "Vercel env se ya Firestore se dobara fetch kar lo" wala koi seedha raasta nahi hai — hash se plaintext wapas nikalna cryptographically possible hi nahi hota.
+
+**Fix**: `sessionStorage` ki jagah ab `localStorage` use hota hai (`app/test/page.js`) — ek baar teeno keys paste karne ke baad, is browser me hamesha save rahengi (tab close/restart survive karengi), jab tak khud na hataao. Naya **"Clear Saved Keys"** button bhi hai (header me, jab teeno keys filled hon) — agar shared/public device use kar rahe ho to ek click me clear kar sakte ho.
+
+Trust boundary same hai jo pehle thi — keys sirf is browser me, sirf tere gateway ki apni API ko bheji jaati hain, kahin aur nahi.
+
+## Round 4 — Complexity-Based Model Routing + Naye Coding Models
+
+1. **Complexity-based auto-routing** — har text request ab `classifyComplexity()` (naya, `lib/tokenTools.js`) se guzarti hai jo teen tags deti hai:
+   - `simple` — chhota, plain-language message (greeting, quick fact, chhota rewrite) — koi code/engineering keyword nahi, 400 tokens se kam
+   - `standard` — na bahut chhota na koi complexity-signal — purana default behavior
+   - `complex` — code-block (` ``` `), engineering keywords (function/debug/refactor/api/database/architecture/etc.), multi-step planning language, image attached, ya 8000+ tokens ka prompt
+
+   Har tag ka apna pool-order hai (`lib/modelRegistry.js` — `SIMPLE_POOL_ORDER`, `TEXT_POOL_ORDER`, `COMPLEX_POOL_ORDER`):
+   - **Simple** → naya `SIMPLE` pool pehle try hota hai (Groq `gpt-oss-20b` + Cerebras `gpt-oss-120b`) — fast, aur `TEXT`/`TEXT_COMPLEX` pool ka quota bachta hai chhoti chat ke liye
+   - **Complex** → naya `TEXT_COMPLEX` pool pehle try hota hai — specifically coding/agentic-strength wale models (neeche dekho)
+   - **Standard** → purana `TEXT` pool, koi change nahi
+
+   Ye heuristic-based hai (koi LLM call nahi karta classify karne ke liye — wo khud ek request lagegi, jiska poora point hi ye avoid karna hai). False-positive/negative dono ka cost bas "shayad thoda weak/strong model try hua pehle" hai — model-scorer aur fallback chain wahi se recover kar leti hai, ye ek hard rule nahi hai bas ek smart first-guess hai.
+
+   Response body me ab `complexity` field bhi aata hai (`pool` field ke saath) — test page pe har result ke saath dikh jaata hai kaunse tag/pool se serve hua.
+
+2. **Naye coding-focused free models add hue** (`lib/modelRegistry.js` ka naya `TEXT_COMPLEX` pool):
+   - **Z.ai GLM 5.2** (`z-ai/glm-5.2:free`, OpenRouter) — 1M context, explicitly "project-level software engineering, long-horizon agent workflows" ke liye design kiya gaya
+   - **Poolside Laguna S 2.1** (`poolside/laguna-s-2.1:free`, OpenRouter) — coding agent model, 70.2% Terminal-Bench 2.1
+   - **Cerebras `zai-glm-4.7`** — pehle se tha, `ADDITIONAL_LIVE_POOL` se yahan move kiya (uska hi asli purpose hai)
+
+   Naya `TEXT_FALLBACK` addition: **MiniMax M3** (`minimax/minimax-m3:free`) — 1M context, "long-horizon agentic work, coding, tool use".
+
+   Note: DeepSeek V4 (jo abhi bahut discuss ho raha hai — Opus-level bataya ja raha hai coding benchmarks pe) **is waqt OpenRouter ke free tier me nahi hai** (live check kiya gaya) — sirf paid hai (~$0.44/M input tokens). Free lineup rotate hota rehta hai, isliye future me agar wapas free aaye to yahi teen jagah (`TEXT_COMPLEX` ya `TEXT_FALLBACK`) me `deepseek/...:free` model-id add karna hoga.
+
+3. **Do chhote bugs jo isi kaam ke dauraan mile aur fix hue:**
+   - `routeTextRequestStream()` (`/chat/stream` ka backend) complexity-routing use hi nahi kar raha tha — `routeTextRequest()` me wire kiya tha lekin streaming wala function alag hai, wahan miss ho gaya tha. Ab dono jagah same complexity classification apply hoti hai.
+   - CORS headers me `Access-Control-Expose-Headers` set nahi tha — matlab agar koi cross-origin client (jaisa koi doosri site ya app se ye gateway call ho, na ki same Vercel deployment se) naye `X-Gateway-Pool`/`X-Gateway-Complexity` response headers padhne ki koshish karta, unhe khaali/null milta chahe response body sahi aata. Same-origin (jaisa admin/test page) pe ye issue nahi tha, isliye pehle test karte waqt miss ho sakta tha. Fix ho gaya.
+
 ## Round 3 — Naye Features + Real Streaming
 
 1. **Real streaming (fake typewriter hataya)** — `/api/v1/chat/stream` pehle poora response wait karta tha, phir artificial 20ms/chunk delay ke saath re-chunk karta tha (total time plain `/chat` se bhi zyada, koi real benefit nahi tha). Ab Groq/OpenRouter/Cerebras ke asli `stream: true` (OpenAI-compatible SSE) endpoints use hote hain — first-token latency ab provider ki real TTFT (time-to-first-token) match karti hai. Fallback logic: streaming-capable provider se **connect** hone tak fail-fast fallback chalta hai (agla key/provider try hota hai), lekin ek baar bytes client ko jaane lagen us stream ko complete hone dete hain (mid-stream provider-switch se garbled/duplicate output aata, isliye wo nahi kiya).
