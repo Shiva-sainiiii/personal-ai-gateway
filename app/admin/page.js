@@ -19,6 +19,20 @@ function daysSince(timestamp) {
   return Math.floor((Date.now() - ms) / (1000 * 60 * 60 * 24));
 }
 
+// Same Firestore Timestamp shape as daysSince above, but for a full
+// readable date+time string (Test History rows) rather than a day count.
+function formatTimestamp(timestamp) {
+  if (!timestamp) return "—";
+  const ms = timestamp._seconds ? timestamp._seconds * 1000 : Date.parse(timestamp);
+  if (!ms || Number.isNaN(ms)) return "—";
+  return new Date(ms).toLocaleString(undefined, {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
 // Best-effort decode of a stored lastError string into a short, human
 // readable reason. lastError is stored as JSON.stringify(providerErrorBody)
 // or a plain error message — providers don't agree on shape, so this tries
@@ -62,6 +76,9 @@ export default function AdminPage() {
   const [stats, setStats] = useState(null);
   const [msg, setMsg] = useState("");
   const [logFilters, setLogFilters] = useState({ provider: "all", type: "all", status: "all", search: "" });
+  const [testHistory, setTestHistory] = useState([]);
+  const [historyFilters, setHistoryFilters] = useState({ provider: "all", testType: "all", status: "all" });
+  const [clearingHistory, setClearingHistory] = useState(false);
 
   const [form, setForm] = useState({ provider: "openrouter", accountLabel: "acc1", apiKey: "", accountId: "" });
   const [masterKeyStatus, setMasterKeyStatus] = useState(null);
@@ -161,21 +178,24 @@ export default function AdminPage() {
     setKeys([]);
     setStats(null);
     setMasterKeyStatus(null);
+    setTestHistory([]);
   }
 
   const loadAll = useCallback(async () => {
-    const [keysRes, statsRes] = await Promise.all([
+    const [keysRes, statsRes, historyRes] = await Promise.all([
       fetch("/api/admin/keys", { headers: headers() }),
       fetch("/api/admin/stats", { headers: headers() }),
+      fetch("/api/admin/test-history", { headers: headers() }),
     ]);
     // Session may have been revoked/rotated server-side since login — bounce
     // back to the login screen instead of silently failing forever.
-    if (keysRes.status === 401 || statsRes.status === 401) {
+    if (keysRes.status === 401 || statsRes.status === 401 || historyRes.status === 401) {
       logout();
       return;
     }
     if (keysRes.ok) setKeys((await keysRes.json()).keys);
     if (statsRes.ok) setStats(await statsRes.json());
+    if (historyRes.ok) setTestHistory((await historyRes.json()).history);
   }, [headers]);
 
   useEffect(() => {
@@ -239,6 +259,22 @@ export default function AdminPage() {
       setPruneMsg(`❌ Network error: ${err.message}`);
     } finally {
       setPruning(false);
+    }
+  }
+
+  async function deleteTestHistoryEntry(id) {
+    setTestHistory((h) => h.filter((r) => r.id !== id)); // optimistic
+    await fetch(`/api/admin/test-history?id=${id}`, { method: "DELETE", headers: headers() });
+  }
+
+  async function clearTestHistory() {
+    if (!confirm("Saari saved test history delete kar dein? Ye undo nahi ho sakta.")) return;
+    setClearingHistory(true);
+    try {
+      await fetch("/api/admin/test-history", { method: "DELETE", headers: headers() });
+      setTestHistory([]);
+    } finally {
+      setClearingHistory(false);
     }
   }
 
@@ -782,6 +818,142 @@ export default function AdminPage() {
           })()}
         </section>
       )}
+
+      {/* TEST HISTORY — manual tests run from the Test page's provider/model
+          picker, saved with a timestamp. Separate from "Recent Requests"
+          above (which is ALL traffic, auto-routed included) — this only
+          ever contains deliberate manual tests. */}
+      <section className="card">
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h2 style={{ margin: 0 }}>Test History</h2>
+          {testHistory.length > 0 && (
+            <button onClick={clearTestHistory} disabled={clearingHistory} className="btn btn-ghost btn-sm">
+              {clearingHistory ? "Clearing..." : "Clear All"}
+            </button>
+          )}
+        </div>
+        <p className="card-hint" style={{ marginTop: 10 }}>
+          Test page ke manual provider/model picker se chalaye gaye tests yahan timestamp ke saath save hote hain.
+        </p>
+        {testHistory.length === 0 ? (
+          <p className="muted" style={{ fontSize: 13 }}>
+            Abhi tak koi manual test save nahi hua. Test page pe jaake "Manual provider/model select karo" on karo,
+            koi test chalao — yahan apne aap aa jaayega.
+          </p>
+        ) : (
+          (() => {
+            const providerOptions = [...new Set(testHistory.map((r) => r.provider))].sort();
+            const filtered = testHistory.filter((r) => {
+              if (historyFilters.provider !== "all" && r.provider !== historyFilters.provider) return false;
+              if (historyFilters.testType !== "all" && r.testType !== historyFilters.testType) return false;
+              if (historyFilters.status === "ok" && !r.ok) return false;
+              if (historyFilters.status === "failed" && r.ok) return false;
+              return true;
+            });
+
+            return (
+              <>
+                <div className="row" style={{ flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                  <select
+                    value={historyFilters.provider}
+                    onChange={(e) => setHistoryFilters((f) => ({ ...f, provider: e.target.value }))}
+                    className="input"
+                    style={{ width: "auto" }}
+                  >
+                    <option value="all">All providers</option>
+                    {providerOptions.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={historyFilters.testType}
+                    onChange={(e) => setHistoryFilters((f) => ({ ...f, testType: e.target.value }))}
+                    className="input"
+                    style={{ width: "auto" }}
+                  >
+                    <option value="all">All types</option>
+                    <option value="text">text</option>
+                    <option value="image">image</option>
+                    <option value="audio">audio</option>
+                  </select>
+                  <select
+                    value={historyFilters.status}
+                    onChange={(e) => setHistoryFilters((f) => ({ ...f, status: e.target.value }))}
+                    className="input"
+                    style={{ width: "auto" }}
+                  >
+                    <option value="all">All statuses</option>
+                    <option value="ok">✅ OK only</option>
+                    <option value="failed">❌ Failed only</option>
+                  </select>
+                  {(historyFilters.provider !== "all" || historyFilters.testType !== "all" || historyFilters.status !== "all") && (
+                    <button
+                      onClick={() => setHistoryFilters({ provider: "all", testType: "all", status: "all" })}
+                      className="btn btn-ghost btn-sm"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+                <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
+                  Showing {filtered.length} of {testHistory.length}
+                </p>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Time</th>
+                        <th>Type</th>
+                        <th>Provider</th>
+                        <th>Model</th>
+                        <th>OK</th>
+                        <th>Latency</th>
+                        <th></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map((r) => (
+                        <tr
+                          key={r.id}
+                          onClick={() =>
+                            setErrorModalKey({
+                              id: `${r.provider} · ${r.model}`,
+                              status: r.ok ? "active" : "failed",
+                              lastError: r.errorMessage || (r.output ? JSON.stringify({ input: r.input, output: r.output }) : null),
+                            })
+                          }
+                          style={{ cursor: "pointer" }}
+                        >
+                          <td style={{ fontSize: 12, whiteSpace: "nowrap" }}>{formatTimestamp(r.createdAt)}</td>
+                          <td>{r.testType}</td>
+                          <td>{r.provider}</td>
+                          <td style={{ fontSize: 12 }}>{r.model}</td>
+                          <td>{r.ok ? "✅" : "❌ (tap for detail)"}</td>
+                          <td>{r.latencyMs != null ? `${r.latencyMs}ms` : "—"}</td>
+                          <td>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                deleteTestHistoryEntry(r.id);
+                              }}
+                              className="btn btn-ghost btn-sm"
+                              title="Delete this entry"
+                            >
+                              ✕
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            );
+          })()
+        )}
+      </section>
 
       {errorModalKey && (
         <ErrorDetailModal keyDoc={errorModalKey} onClose={() => setErrorModalKey(null)} />

@@ -62,7 +62,48 @@ export default function TestPage() {
 
   const [loading, setLoading] = useState({ text: false, imageGen: false, vision: false, audio: false, stream: false });
 
-  async function runRequest({ url, init, setResult, loadingKey }) {
+  // --- Manual provider/model picker -----------------------------------
+  // Off by default (normal auto-routed test). When on for a given section,
+  // that section's test hits /api/v1/test with an explicit provider+model
+  // instead of the usual auto-routed endpoint, and the result is saved to
+  // the admin Test History automatically once it completes.
+  const [modelCatalog, setModelCatalog] = useState(null); // { modelsByProvider, providerKinds } | null while loading
+  const [manual, setManual] = useState({
+    text: { on: false, provider: "", model: "" },
+    imageGen: { on: false, provider: "", model: "" },
+    audio: { on: false, provider: "", model: "" },
+  });
+
+  // Loads the provider/model catalog once any key is available — needs
+  // *a* master key (any one) to authenticate, see /api/admin/models's auth
+  // note for why a master key is accepted there alongside the admin password.
+  useEffect(() => {
+    const anyKey = textKey || imageKey || audioKey;
+    if (!anyKey || modelCatalog) return;
+    fetch("/api/admin/models", { headers: { Authorization: `Bearer ${anyKey}` } })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((json) => json && setModelCatalog(json))
+      .catch(() => {});
+  }, [textKey, imageKey, audioKey, modelCatalog]);
+
+  function setManualSection(section, patch) {
+    setManual((m) => ({ ...m, [section]: { ...m[section], ...patch } }));
+  }
+
+  // Saves a completed manual test to the admin Test History collection.
+  // Fire-and-forget — a failed save shouldn't block or alter the test
+  // result already shown on screen.
+  function saveToHistory({ testType, provider, model, ok, status, latencyMs, input, output, errorMessage, attempts }) {
+    const anyKey = textKey || imageKey || audioKey;
+    if (!anyKey) return;
+    fetch("/api/admin/test-history", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${anyKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ testType, provider, model, ok, status, latencyMs, input, output, errorMessage, attempts }),
+    }).catch(() => {});
+  }
+
+  async function runRequest({ url, init, setResult, loadingKey, history }) {
     setLoading((l) => ({ ...l, [loadingKey]: true }));
     setResult(null);
     const started = Date.now();
@@ -76,14 +117,43 @@ export default function TestPage() {
         json = { error: "Response was not valid JSON." };
       }
       setResult({ status: res.status, ms, body: json });
+      if (history) {
+        const ok = res.status >= 200 && res.status < 300;
+        saveToHistory({
+          ...history,
+          ok,
+          status: res.status,
+          latencyMs: ms,
+          output: ok ? json.text || (json.imageBase64 ? "[image generated]" : JSON.stringify(json).slice(0, 500)) : null,
+          errorMessage: !ok ? json.error || "Unknown error" : null,
+          attempts: json.attempts,
+        });
+      }
     } catch (err) {
       setResult({ error: err.message });
+      if (history) {
+        saveToHistory({ ...history, ok: false, status: null, latencyMs: Date.now() - started, errorMessage: err.message });
+      }
     } finally {
       setLoading((l) => ({ ...l, [loadingKey]: false }));
     }
   }
 
   function testText() {
+    const m = manual.text;
+    if (m.on && m.provider && m.model) {
+      return runRequest({
+        url: "/api/v1/test",
+        init: {
+          method: "POST",
+          headers: { Authorization: `Bearer ${textKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "text", provider: m.provider, model: m.model, messages: [{ role: "user", content: prompt }] }),
+        },
+        setResult: setTextResult,
+        loadingKey: "text",
+        history: { testType: "text", provider: m.provider, model: m.model, input: prompt },
+      });
+    }
     return runRequest({
       url: "/api/v1/chat",
       init: {
@@ -157,6 +227,20 @@ export default function TestPage() {
   }
 
   function testImageGeneration() {
+    const m = manual.imageGen;
+    if (m.on && m.provider && m.model) {
+      return runRequest({
+        url: "/api/v1/test",
+        init: {
+          method: "POST",
+          headers: { Authorization: `Bearer ${imageKey}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ type: "image", provider: m.provider, model: m.model, prompt: imgGenPrompt }),
+        },
+        setResult: setImageGenResult,
+        loadingKey: "imageGen",
+        history: { testType: "image", provider: m.provider, model: m.model, input: imgGenPrompt },
+      });
+    }
     return runRequest({
       url: "/api/v1/image",
       init: {
@@ -226,6 +310,20 @@ export default function TestPage() {
 
   function testAudioAuthOnly() {
     setAudioFileName(null);
+    const m = manual.audio;
+    if (m.on && m.provider && m.model) {
+      return runRequest({
+        url: `/api/v1/test?type=audio&provider=${encodeURIComponent(m.provider)}&model=${encodeURIComponent(m.model)}`,
+        init: {
+          method: "POST",
+          headers: { Authorization: `Bearer ${audioKey}`, "Content-Type": "audio/wav" },
+          body: new Uint8Array([0, 0, 0, 0]),
+        },
+        setResult: setAudioResult,
+        loadingKey: "audio",
+        history: { testType: "audio", provider: m.provider, model: m.model, input: "[auth-only dummy bytes]" },
+      });
+    }
     return runRequest({
       url: "/api/v1/audio",
       init: {
@@ -242,7 +340,21 @@ export default function TestPage() {
     if (!file) return;
     setAudioFileName(file.name);
     const arrayBuffer = await file.arrayBuffer();
-    runRequest({
+    const m = manual.audio;
+    if (m.on && m.provider && m.model) {
+      return runRequest({
+        url: `/api/v1/test?type=audio&provider=${encodeURIComponent(m.provider)}&model=${encodeURIComponent(m.model)}`,
+        init: {
+          method: "POST",
+          headers: { Authorization: `Bearer ${audioKey}`, "Content-Type": file.type || "audio/wav" },
+          body: arrayBuffer,
+        },
+        setResult: setAudioResult,
+        loadingKey: "audio",
+        history: { testType: "audio", provider: m.provider, model: m.model, input: `[file: ${file.name}]` },
+      });
+    }
+    return runRequest({
       url: "/api/v1/audio",
       init: {
         method: "POST",
@@ -312,7 +424,7 @@ export default function TestPage() {
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between" }}>
           <h2 style={{ margin: 0 }}>1. Text</h2>
-          <code className="inline-code">/api/v1/chat</code>
+          <code className="inline-code">{manual.text.on ? "/api/v1/test" : "/api/v1/chat"}</code>
         </div>
         <div className="field-label" style={{ marginTop: 14 }}>Master Key (Text)</div>
         <input
@@ -322,9 +434,14 @@ export default function TestPage() {
           className="input"
           type="password"
         />
+        <ManualPicker section="text" testKind="text" manual={manual} setManualSection={setManualSection} modelCatalog={modelCatalog} />
         <div className="field-label">Prompt</div>
         <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} className="input" />
-        <button onClick={testText} disabled={!textKey || loading.text} className="btn">
+        <button
+          onClick={testText}
+          disabled={!textKey || loading.text || (manual.text.on && (!manual.text.provider || !manual.text.model))}
+          className="btn"
+        >
           {loading.text ? (
             <>
               <span className="spinner" /> Testing...
@@ -376,7 +493,7 @@ export default function TestPage() {
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between" }}>
           <h2 style={{ margin: 0 }}>2. Image Generation</h2>
-          <code className="inline-code">/api/v1/image</code>
+          <code className="inline-code">{manual.imageGen.on ? "/api/v1/test" : "/api/v1/image"}</code>
         </div>
         <p className="card-hint" style={{ marginTop: 14 }}>
           Text se image banwata hai (Pollinations primary, Cloudflare fallback). Google AI Studio ab is pool me
@@ -391,9 +508,14 @@ export default function TestPage() {
           className="input"
           type="password"
         />
+        <ManualPicker section="imageGen" testKind="image" manual={manual} setManualSection={setManualSection} modelCatalog={modelCatalog} />
         <div className="field-label">Prompt</div>
         <input value={imgGenPrompt} onChange={(e) => setImgGenPrompt(e.target.value)} className="input" />
-        <button onClick={testImageGeneration} disabled={!imageKey || loading.imageGen} className="btn">
+        <button
+          onClick={testImageGeneration}
+          disabled={!imageKey || loading.imageGen || (manual.imageGen.on && (!manual.imageGen.provider || !manual.imageGen.model))}
+          className="btn"
+        >
           {loading.imageGen ? (
             <>
               <span className="spinner" /> Generating (can take up to ~30s)...
@@ -464,7 +586,7 @@ export default function TestPage() {
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between" }}>
           <h2 style={{ margin: 0 }}>4. Audio (Listen / Transcription)</h2>
-          <code className="inline-code">/api/v1/audio</code>
+          <code className="inline-code">{manual.audio.on ? "/api/v1/test" : "/api/v1/audio"}</code>
         </div>
         <p className="card-hint" style={{ marginTop: 14 }}>
           Abhi gateway sirf audio-to-text (transcription/"listen") support karta hai — Cloudflare Whisper primary,
@@ -483,16 +605,28 @@ export default function TestPage() {
           className="input"
           type="password"
         />
+        <ManualPicker
+          section="audio"
+          testKind="audio"
+          manual={manual}
+          setManualSection={setManualSection}
+          modelCatalog={modelCatalog}
+          providerFilter={(p) => p === "cloudflare" || p === "googleAiStudio"}
+        />
         <div className="field-row two-col">
           <input
             type="file"
             accept="audio/*"
             onChange={(e) => testAudioFile(e.target.files?.[0])}
-            disabled={!audioKey || loading.audio}
+            disabled={!audioKey || loading.audio || (manual.audio.on && (!manual.audio.provider || !manual.audio.model))}
             className="input"
             style={{ padding: 8 }}
           />
-          <button onClick={testAudioAuthOnly} disabled={!audioKey || loading.audio} className="btn btn-ghost">
+          <button
+            onClick={testAudioAuthOnly}
+            disabled={!audioKey || loading.audio || (manual.audio.on && (!manual.audio.provider || !manual.audio.model))}
+            className="btn btn-ghost"
+          >
             {loading.audio ? "Testing..." : "Auth-Only Check"}
           </button>
         </div>
@@ -500,6 +634,86 @@ export default function TestPage() {
         {audioResult && <Result r={audioResult} filePrefix="audio-listen" />}
       </section>
     </main>
+  );
+}
+
+// Manual provider/model picker — toggled per-section. When on, the parent
+// section's test button hits /api/v1/test with the chosen provider+model
+// instead of the normal auto-routed endpoint, and the result is saved to
+// the admin Test History automatically (see saveToHistory in TestPage).
+//
+// `testKind` filters which providers make sense for this section: "image"
+// only shows providers with a `kind` of "image" or "mixed", "text" only
+// shows "text"/"mixed", and audio callers pass an explicit providerFilter
+// since only cloudflare + googleAiStudio support transcription in this
+// codebase today (not every "mixed" provider does).
+function ManualPicker({ section, testKind, manual, setManualSection, modelCatalog, providerFilter }) {
+  const state = manual[section];
+
+  const providerOptions = modelCatalog
+    ? Object.keys(modelCatalog.modelsByProvider)
+        .filter((p) => {
+          if (providerFilter) return providerFilter(p);
+          const kind = modelCatalog.providerKinds[p];
+          if (testKind === "image") return kind === "image" || kind === "mixed";
+          if (testKind === "audio") return kind === "mixed";
+          return kind === "text" || kind === "mixed";
+        })
+        .sort()
+    : [];
+
+  const modelOptions = modelCatalog && state.provider ? modelCatalog.modelsByProvider[state.provider] || [] : [];
+
+  return (
+    <div className="result-box" style={{ marginBottom: 12, background: "rgba(96, 165, 250, 0.06)", borderColor: "#1e3a5c" }}>
+      <label className="row" style={{ gap: 8, alignItems: "center", cursor: "pointer" }}>
+        <input
+          type="checkbox"
+          checked={state.on}
+          onChange={(e) => setManualSection(section, { on: e.target.checked })}
+        />
+        <strong style={{ fontSize: 13 }}>Manual provider/model select karo</strong>
+      </label>
+      {state.on && (
+        <div className="field-row two-col" style={{ marginTop: 10 }}>
+          <div>
+            <div className="field-label" style={{ marginTop: 0 }}>Provider</div>
+            {modelCatalog ? (
+              <select
+                value={state.provider}
+                onChange={(e) => setManualSection(section, { provider: e.target.value, model: "" })}
+                className="input"
+              >
+                <option value="">-- provider chuno --</option>
+                {providerOptions.map((p) => (
+                  <option key={p} value={p}>
+                    {p}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <p className="muted" style={{ fontSize: 12 }}>Master key daalo pehle, list load hogi...</p>
+            )}
+          </div>
+          <div>
+            <div className="field-label" style={{ marginTop: 0 }}>Model</div>
+            <select
+              value={state.model}
+              onChange={(e) => setManualSection(section, { model: e.target.value })}
+              className="input"
+              disabled={!state.provider}
+            >
+              <option value="">-- model chuno --</option>
+              {modelOptions.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
