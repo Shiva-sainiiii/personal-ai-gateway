@@ -380,6 +380,26 @@ concept ab tak sirf ek assumption tha, ab explicit hai aur code me sahi jagah la
   karta — pehle wo wiring chahiye, warna image silently drop ho jayegi. Details
   `lib/modelRegistry.js` ke VISION comment aur `docs/PROVIDER_LIMITS.md` me.
 
+## Round 7 — Test Page Manual Picker: Category-Correct Dropdowns
+
+- **Bug fix**: Manual provider/model picker (Test page) dikhata tha same combined model
+  list har section me — chahe Text ho, Image-Generation ho, ya Audio ho, aur chahe wo model
+  us category ko support karta ho ya na karta ho. Jaise OpenRouter select karne pe
+  Image-Generation section me OpenRouter ke text models dikhte the, jabki OpenRouter ka koi
+  free image-gen model hai hi nahi. Cloudflare select karne pe har section me uske text +
+  image + audio + tts + embedding — sab ek saath dikhte the.
+- **Root cause**: `lib/modelRegistry.js`'s `allModelsByProvider()` sirf provider-level pe
+  flat list banata tha, model ki category (text/image/audio/tts/embedding) track hi nahi
+  hoti thi.
+- **Fix**: `allModelsByProvider()` ab `{ [provider]: { text: [...], image: [...],
+  audio: [...], tts: [...], embedding: [...] } }` shape return karta hai — har model apni
+  asli category me. `app/test/page.js`'s `ManualPicker` ab dono dropdown (provider aur model)
+  is naye shape se filter karta hai `testKind` (text/image/audio) ke hisaab se — jis provider
+  ke paas us category me koi model nahi, wo provider dropdown me hi nahi dikhega.
+- Google AI Studio ka image-gen (`gemini-2.5-flash-image`, fixed single model) aur audio
+  transcription (jo uske hi text models reuse karta hai) explicitly surface kiye gaye hain
+  taaki inke pickers khali na rahein.
+
 ## File Structure
 
 ```

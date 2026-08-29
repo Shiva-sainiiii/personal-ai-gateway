@@ -642,27 +642,40 @@ export default function TestPage() {
 // instead of the normal auto-routed endpoint, and the result is saved to
 // the admin Test History automatically (see saveToHistory in TestPage).
 //
-// `testKind` filters which providers make sense for this section: "image"
-// only shows providers with a `kind` of "image" or "mixed", "text" only
-// shows "text"/"mixed", and audio callers pass an explicit providerFilter
-// since only cloudflare + googleAiStudio support transcription in this
-// codebase today (not every "mixed" provider does).
+// `testKind` selects which CATEGORY of model to show for both dropdowns:
+// "text" -> text models, "image" -> image-generation models, "audio" ->
+// audio-input (transcription) models. modelCatalog.modelsByProvider is
+// shaped { [provider]: { text: [...], image: [...], audio: [...], ... } }
+// (see modelRegistry.js's allModelsByProvider) — the provider dropdown only
+// lists providers that have at least one model in THIS testKind's category
+// (so picking OpenRouter in the Image-Generation section is impossible,
+// since OpenRouter has zero free image-gen models), and the model dropdown
+// only ever pulls from that same category, never the provider's full
+// catalog. Audio callers additionally pass providerFilter since not every
+// provider with an "audio" entry actually wires up transcription in this
+// codebase the same way (kept as an extra explicit guard, not a replacement
+// for the category filter).
+//
+// Bug fix: this used to show the SAME flat per-provider model list in every
+// section regardless of testKind — selecting OpenRouter under
+// Image-Generation listed all its text models (it has no free image-gen
+// models at all), and any provider with mixed categories (Cloudflare: text +
+// image + audio + tts + embedding) showed every one of its models in every
+// section's dropdown. Now each section only ever sees its own category.
 function ManualPicker({ section, testKind, manual, setManualSection, modelCatalog, providerFilter }) {
   const state = manual[section];
 
   const providerOptions = modelCatalog
     ? Object.keys(modelCatalog.modelsByProvider)
         .filter((p) => {
-          if (providerFilter) return providerFilter(p);
-          const kind = modelCatalog.providerKinds[p];
-          if (testKind === "image") return kind === "image" || kind === "mixed";
-          if (testKind === "audio") return kind === "mixed";
-          return kind === "text" || kind === "mixed";
+          const hasCategoryModels = (modelCatalog.modelsByProvider[p]?.[testKind] || []).length > 0;
+          if (!hasCategoryModels) return false;
+          return providerFilter ? providerFilter(p) : true;
         })
         .sort()
     : [];
 
-  const modelOptions = modelCatalog && state.provider ? modelCatalog.modelsByProvider[state.provider] || [] : [];
+  const modelOptions = modelCatalog && state.provider ? modelCatalog.modelsByProvider[state.provider]?.[testKind] || [] : [];
 
   return (
     <div className="result-box" style={{ marginBottom: 12, background: "rgba(96, 165, 250, 0.06)", borderColor: "#1e3a5c" }}>
