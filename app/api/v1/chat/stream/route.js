@@ -1,5 +1,5 @@
 import { requireMasterKey } from "../../../../../lib/auth.js";
-import { routeTextRequest } from "../../../../../lib/orchestrator.js";
+import { routeTextRequest, routeTextRequestStream } from "../../../../../lib/orchestrator.js";
 import { encodeAsSSE, sseHeaders } from "../../../../../lib/streamTools.js";
 import { withCors, corsPreflight } from "../../../../../lib/cors.js";
 
@@ -56,6 +56,23 @@ export async function POST(req) {
     );
   }
 
+  // Real streaming first: tries Groq/OpenRouter/Cerebras' actual `stream:
+  // true` endpoints, relaying real tokens as they arrive (see
+  // lib/streamTools.js for why this replaced the old fake-typewriter
+  // approach). Only falls back to the non-streaming path + artificial
+  // re-chunking if every streaming-capable provider fails to even connect.
+  const streamResult = await routeTextRequestStream({
+    messages,
+    preferredModel: model,
+    imageUrl,
+    imageBase64,
+    imageMimeType,
+  });
+
+  if (streamResult.ok) {
+    return withCors(new Response(streamResult.stream, { headers: sseHeaders() }));
+  }
+
   const result = await routeTextRequest({
     messages,
     preferredModel: model,
@@ -66,7 +83,7 @@ export async function POST(req) {
 
   if (!result.ok) {
     return withCors(
-      new Response(JSON.stringify({ error: result.error, attempts: result.attempts }), {
+      new Response(JSON.stringify({ error: result.error, attempts: [...streamResult.attempts, ...result.attempts] }), {
         status: 502,
         headers: { "Content-Type": "application/json" },
       })

@@ -239,6 +239,20 @@ Deep code review ke baad ye bugs fix hue (koi purana feature hataya nahi, sab ex
 9. **`responseCache` aur `inFlight` docs kabhi delete nahi hote the** — comment "let it expire naturally" bolta tha lekin koi actual delete code nahi tha. Ab dono jagah best-effort delete add hua hai (expired cache-read pe, aur coalescer lock release ke kuch der baad) — ye partial fix hai; poora fix ke liye Firestore TTL policy console se set karo (niche "Firestore Cleanup" section dekho).
 10. **Dead code hataya**: `isSimpleRequest` (kabhi call nahi hota tha) aur `providersForKind` (kabhi call nahi hota tha, aur agar hota to galat result deta — `kind === "mixed"` providers ko bhi image-capable maan leta jabki unme `generateImage` implement hi nahi hai).
 
+## Round 3 — Naye Features + Real Streaming
+
+1. **Real streaming (fake typewriter hataya)** — `/api/v1/chat/stream` pehle poora response wait karta tha, phir artificial 20ms/chunk delay ke saath re-chunk karta tha (total time plain `/chat` se bhi zyada, koi real benefit nahi tha). Ab Groq/OpenRouter/Cerebras ke asli `stream: true` (OpenAI-compatible SSE) endpoints use hote hain — first-token latency ab provider ki real TTFT (time-to-first-token) match karti hai. Fallback logic: streaming-capable provider se **connect** hone tak fail-fast fallback chalta hai (agla key/provider try hota hai), lekin ek baar bytes client ko jaane lagen us stream ko complete hone dete hain (mid-stream provider-switch se garbled/duplicate output aata, isliye wo nahi kiya).
+2. **Vision preview URL leak fix** — test page pe image preview ke liye `URL.createObjectURL()` use hota hai; pehle sirf next-file-select pe revoke hota tha, ab component unmount pe bhi revoke hota hai.
+3. **`requestLogs` ke liye daily cleanup cron** — naya `/api/cron/cleanup-logs` route, Vercel Cron se roz 3 AM UTC pe trigger hota hai, 14 din se purane logs delete karta hai (batched). Setup steps "Firestore Cleanup" section ke baad hai.
+4. **Provider routing by remaining-quota%** — `lib/usageLimits.js` me ab live per-key daily usage tracking hai (Firestore `usageCounters` collection). Pehle ye sirf display ke liye tha; ab orchestrator isko actually routing decision me use karta hai — jis key ka aaj ka quota sabse zyada bacha hai, use pehle try kiya jaata hai (rate-limit filter ke baad). Admin panel me naya "Quota Left %" column bhi dikhta hai.
+5. **"Run All Tests" button** — test page pe, Text + Stream + Image Generation ko sequentially chalata hai (jinki key di hai). Vision aur Audio-file alag se chalane hote hain kyunki unme manually file choose karni padti hai.
+6. **Request Logs filter/search** — admin panel ke "Recent Requests" table me provider/type/status dropdown filters, aur model/error text search.
+7. **Dark/Light mode toggle** — navbar me sun/moon icon, localStorage me persist hota hai, page-load pe flash-of-wrong-theme na ho isliye ek inline script layout.js me hai jo theme apply karta hai React hydrate hone se pehle hi.
+8. **Text-to-Speech** — naya `/api/v1/speech` route (MASTER_KEY_AUDIO use karta hai — same key jo transcription ke liye hai, kyunki dono "audio" domain me hain). Cloudflare ka `@cf/myshell-ai/melotts` model use hota hai. Body: `{ "text": "...", "lang": "en" }` (lang optional). Response: `{ "audioBase64": "...", "contentType": "audio/mpeg" }`.
+9. **`/api/v1/embeddings` route** — naya route, MASTER_KEY_TEXT use karta hai (embeddings text-domain operation hai). Cloudflare ka `@cf/baai/bge-large-en-v1.5` model. Body: `{ "input": "text" }` ya `{ "input": ["text1", "text2"] }` (OpenAI convention). Response: `{ "embeddings": [[...vector], ...] }`.
+10. **Key rotation reminder** — disabled hone wali keys ab `disabledAt` timestamp save karti hain. Admin panel me naya "Disabled Since" column — "3d ago" jaisa dikhta hai, 3+ din yellow, 7+ din red, taaki purani-disabled keys nazar-andaz na hon.
+11. **Webhook/alerting (Telegram + Discord)** — naya `lib/alerts.js`. Jab koi provider **fully down** ho jaaye (sab keys disabled), automatically ek alert bhejta hai Telegram aur/ya Discord pe (jo bhi configure kiya ho — dono optional hain). Hourly cooldown hai per-provider taaki spam na ho. Jab key reactivate ho to ek "recovered" alert bhi milta hai. Setup: `.env.example` me `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`, ya `DISCORD_WEBHOOK_URL` (ya dono) daalo — koi bhi na daalo to feature silently disabled rehta hai.
+
 ## Firestore Cleanup (TTL Policy Setup — Optional Lekin Recommended)
 
 Code-level best-effort deletes (upar #9) sirf un docs ko clean karte hain jo **dobara** access hote hain (ek expired cache-entry ko doosri baar dhoondha jaaye tab delete hoti hai). Ek prompt jo sirf ek hi baar use hua ho, uska cache-doc kabhi dobara access nahi hoga, isliye wo hamesha reh jaayega — is case ke liye Firestore ka apna **TTL (Time-To-Live) policy** feature use karo, jo automatically purane docs delete karta hai bina kisi code ke:
@@ -249,6 +263,23 @@ Code-level best-effort deletes (upar #9) sirf un docs ko clean karte hain jo **d
 4. Optional: `requestLogs` collection ke liye bhi ek TTL policy add kar sakte ho agar purane logs nahi chahiye (jaise `createdAt` par 30-din TTL) — isse admin stats dashboard bhi fast rahega jaise-jaise data badhega
 
 TTL policy free hai aur setup ke baad kuch bhi extra karne ki zaroorat nahi — Firestore khud background me expired docs clean karta rehta hai (usually 24 ghante ke andar, exact time guaranteed nahi hota lekin eventual hai).
+
+### `requestLogs` Ke Liye Extra Fix — Daily Cron Job
+
+`requestLogs` collection TTL policy se cover nahi hota agar tu chahta hai ki logs **use hone ke baad turant** na katen, balki ek fixed retention window (jaise 14 din) tak rakhe jaayen taaki admin dashboard me recent history dikhti rahe — TTL sirf ek hi expiry-timing de sakta hai poori collection ke liye.
+
+Isliye ek dedicated cron route hai: `app/api/cron/cleanup-logs/route.js`, jo **14 din se purane** `requestLogs` docs delete karta hai (batched deletes, 400 docs per batch), aur saath me expired `responseCache` docs bhi clean karta hai (TTL policy setup na hone ki soorat me backstop).
+
+**Setup**:
+1. Vercel env vars me ek naya secret add karo: `CRON_SECRET` (koi bhi random string, `openssl rand -hex 16` se generate kar sakta hai)
+2. `vercel.json` me already `crons` entry hai jo isko roz **3 AM UTC** pe trigger karega — Vercel ye automatically schedule kar dega deploy hone par (Hobby plan par cron jobs available hain, lekin sirf ek baar per-day frequency tak — jo yahan already match karta hai)
+3. Vercel khud `Authorization: Bearer <CRON_SECRET>` header bhejta hai apne cron requests me — route isi se verify karta hai ki request genuinely Vercel se aayi hai, na ki koi bahar se URL guess karke delete trigger kar raha
+
+Manually bhi test kar sakta hai (deploy hone ke baad):
+```bash
+curl -H "Authorization: Bearer YOUR_CRON_SECRET" https://your-app.vercel.app/api/cron/cleanup-logs
+```
+Response me `requestLogsDeleted` aur `cacheDeleted` count milega.
 
 ### Agla Step (Optional, Baad Me)
 
@@ -273,25 +304,35 @@ Agar zaroorat pade to Upstash abhi bhi add kar sakte hain — cache/coalescing/r
 
 ```
 app/
-  api/v1/chat/route.js       — text endpoint
-  api/v1/image/route.js      — image endpoint
-  api/v1/audio/route.js      — audio endpoint
-  api/admin/keys/route.js    — add/list/delete provider keys
-  api/admin/stats/route.js   — tracking dashboard data
-  admin/page.js              — admin frontend UI (session-persistent login)
-  test/page.js               — MVP test console for all 3 master keys
-  page.js, layout.js         — landing page + shared root layout
-  globals.css                — shared design system (mobile-responsive)
+  api/v1/chat/route.js         — text endpoint
+  api/v1/chat/stream/route.js  — real streaming text endpoint (SSE)
+  api/v1/image/route.js        — image generation endpoint
+  api/v1/audio/route.js        — audio transcription endpoint
+  api/v1/speech/route.js       — text-to-speech endpoint (MeloTTS)
+  api/v1/embeddings/route.js   — text embeddings endpoint (bge-large)
+  api/admin/keys/route.js      — add/list/delete/reactivate provider keys
+  api/admin/stats/route.js     — tracking dashboard data
+  api/cron/cleanup-logs/route.js — daily requestLogs + cache pruning (Vercel Cron)
+  admin/page.js                — admin frontend UI (session-persistent login)
+  test/page.js                 — MVP test console for all master keys + streaming
+  page.js, layout.js            — landing page + shared root layout (theme-init script)
+  globals.css                   — shared design system (mobile-responsive, dark+light)
 components/
-  Navbar.js                  — shared navbar (next/link, active-route highlighting)
+  Navbar.js                     — shared navbar (active-route highlighting, theme toggle)
 lib/
-  firebaseAdmin.js           — Firestore admin client
-  crypto.js                  — AES-256-GCM encrypt/decrypt, SHA-256 hash
-  auth.js                    — master key + admin password checks
-  providers.js                — per-provider API call adapters (incl. Pollinations image)
-  keyManager.js               — Firestore key fetch/update logic
-  orchestrator.js              — the actual fallback loop
+  firebaseAdmin.js               — Firestore admin client
+  crypto.js                      — AES-256-GCM encrypt/decrypt, SHA-256 hash
+  auth.js                        — master key + admin password checks (timing-safe)
+  providers.js                    — per-provider API call adapters (call + callStream + generateImage/Speech/Embedding)
+  keyManager.js                   — Firestore key fetch/update logic, disable/alert wiring
+  orchestrator.js                  — the fallback loop (text, stream, image, audio, speech, embeddings)
+  usageLimits.js                    — published free-tier limits + live per-key quota tracking
+  streamTools.js                    — real SSE relay for streaming responses
+  alerts.js                          — Telegram/Discord down-provider alerting
+  cors.js, clientExport.js           — CORS headers, client-side report download
 scripts/
   seed-keys.mjs               — bulk-seed master keys + provider keys from .env
 firestore.rules              — locks Firestore to server-only access
+vercel.json                  — function timeouts + daily cron schedule
+```
 ```

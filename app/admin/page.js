@@ -7,6 +7,18 @@ const PROVIDERS = ["openrouter", "googleAiStudio", "groq", "cerebras", "cloudfla
 const KEY_OPTIONAL_PROVIDERS = new Set(["pollinations"]);
 const SESSION_KEY = "aigateway_admin_password";
 
+// Firestore Timestamps serialize over JSON as { _seconds, _nanoseconds }
+// (admin SDK) — this converts that (or an ISO string, just in case) into
+// "days since", for the key-rotation reminder column. Returns null when
+// there's no timestamp to compute from (key was never disabled, or disabled
+// before this field existed).
+function daysSince(timestamp) {
+  if (!timestamp) return null;
+  const ms = timestamp._seconds ? timestamp._seconds * 1000 : Date.parse(timestamp);
+  if (!ms || Number.isNaN(ms)) return null;
+  return Math.floor((Date.now() - ms) / (1000 * 60 * 60 * 24));
+}
+
 // Best-effort decode of a stored lastError string into a short, human
 // readable reason. lastError is stored as JSON.stringify(providerErrorBody)
 // or a plain error message — providers don't agree on shape, so this tries
@@ -49,6 +61,7 @@ export default function AdminPage() {
   const [keys, setKeys] = useState([]);
   const [stats, setStats] = useState(null);
   const [msg, setMsg] = useState("");
+  const [logFilters, setLogFilters] = useState({ provider: "all", type: "all", status: "all", search: "" });
 
   const [form, setForm] = useState({ provider: "openrouter", accountLabel: "acc1", apiKey: "", accountId: "" });
   const [masterKeyStatus, setMasterKeyStatus] = useState(null);
@@ -586,6 +599,8 @@ export default function AdminPage() {
               <tr>
                 <th>ID</th>
                 <th>Status</th>
+                <th>Quota Left</th>
+                <th>Disabled Since</th>
                 <th>Success</th>
                 <th>Fail</th>
                 <th>Last Error</th>
@@ -593,46 +608,68 @@ export default function AdminPage() {
               </tr>
             </thead>
             <tbody>
-              {keys.map((k) => (
-                <tr key={k.id}>
-                  <td>{k.id}</td>
-                  <td>
-                    <span className={`badge badge-${k.status === "disabled" ? "disabled" : k.status === "cooldown" ? "cooldown" : "active"}`}>
-                      {k.status}
-                    </span>
-                  </td>
-                  <td>{k.successCount}</td>
-                  <td>{k.failCount}</td>
-                  <td style={{ maxWidth: 220 }}>
-                    {k.lastError ? (
-                      <button
-                        onClick={() => setErrorModalKey(k)}
-                        className="btn btn-ghost btn-sm"
-                        style={{ textAlign: "left", whiteSpace: "normal", maxWidth: "100%" }}
-                        type="button"
-                      >
-                        {decodeErrorReason(k.lastError)?.code ? `${decodeErrorReason(k.lastError).code} — ` : ""}
-                        {(decodeErrorReason(k.lastError)?.summary || k.lastError).slice(0, 40)}
-                        {(decodeErrorReason(k.lastError)?.summary || k.lastError).length > 40 ? "…" : ""}
-                      </button>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                  <td>
-                    <div className="row" style={{ flexWrap: "nowrap" }}>
-                      {k.status === "disabled" && (
-                        <button onClick={() => reactivateKey(k.id)} className="btn btn-success btn-sm">
-                          Reactivate
-                        </button>
+              {keys.map((k) => {
+                const quota = stats?.remainingQuotaByKey?.[k.id];
+                const disabledDays = daysSince(k.disabledAt);
+                return (
+                  <tr key={k.id}>
+                    <td>{k.id}</td>
+                    <td>
+                      <span className={`badge badge-${k.status === "disabled" ? "disabled" : k.status === "cooldown" ? "cooldown" : "active"}`}>
+                        {k.status}
+                      </span>
+                    </td>
+                    <td>
+                      {quota?.remainingPct == null ? (
+                        <span style={{ opacity: 0.5 }}>—</span>
+                      ) : (
+                        <span style={{ color: quota.remainingPct > 50 ? "#4ade80" : quota.remainingPct > 15 ? "#facc15" : "#f87171" }}>
+                          {quota.remainingPct}%
+                        </span>
                       )}
-                      <button onClick={() => removeKey(k.id)} className="btn btn-danger btn-sm">
-                        Delete
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    </td>
+                    <td>
+                      {k.status !== "disabled" || disabledDays == null ? (
+                        <span style={{ opacity: 0.5 }}>—</span>
+                      ) : (
+                        <span style={{ color: disabledDays >= 7 ? "#f87171" : disabledDays >= 3 ? "#facc15" : "inherit" }}>
+                          {disabledDays === 0 ? "today" : `${disabledDays}d ago`}
+                        </span>
+                      )}
+                    </td>
+                    <td>{k.successCount}</td>
+                    <td>{k.failCount}</td>
+                    <td style={{ maxWidth: 220 }}>
+                      {k.lastError ? (
+                        <button
+                          onClick={() => setErrorModalKey(k)}
+                          className="btn btn-ghost btn-sm"
+                          style={{ textAlign: "left", whiteSpace: "normal", maxWidth: "100%" }}
+                          type="button"
+                        >
+                          {decodeErrorReason(k.lastError)?.code ? `${decodeErrorReason(k.lastError).code} — ` : ""}
+                          {(decodeErrorReason(k.lastError)?.summary || k.lastError).slice(0, 40)}
+                          {(decodeErrorReason(k.lastError)?.summary || k.lastError).length > 40 ? "…" : ""}
+                        </button>
+                      ) : (
+                        "—"
+                      )}
+                    </td>
+                    <td>
+                      <div className="row" style={{ flexWrap: "nowrap" }}>
+                        {k.status === "disabled" && (
+                          <button onClick={() => reactivateKey(k.id)} className="btn btn-success btn-sm">
+                            Reactivate
+                          </button>
+                        )}
+                        <button onClick={() => removeKey(k.id)} className="btn btn-danger btn-sm">
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -641,34 +678,108 @@ export default function AdminPage() {
       {stats?.recentLogs && (
         <section className="card">
           <h2>Recent Requests</h2>
-          <div className="table-wrap">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Type</th>
-                  <th>Provider</th>
-                  <th>Model</th>
-                  <th>OK</th>
-                  <th>Latency</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stats.recentLogs.map((l) => (
-                  <tr
-                    key={l.id}
-                    onClick={() => !l.ok && l.errorMessage && setErrorModalKey({ id: `${l.provider} · ${l.model}`, status: "failed", lastError: l.errorMessage })}
-                    style={!l.ok && l.errorMessage ? { cursor: "pointer" } : undefined}
+          {(() => {
+            const providerOptions = [...new Set(stats.recentLogs.map((l) => l.provider))].sort();
+            const filtered = stats.recentLogs.filter((l) => {
+              if (logFilters.provider !== "all" && l.provider !== logFilters.provider) return false;
+              if (logFilters.type !== "all" && l.type !== logFilters.type) return false;
+              if (logFilters.status === "ok" && !l.ok) return false;
+              if (logFilters.status === "failed" && l.ok) return false;
+              if (logFilters.search) {
+                const needle = logFilters.search.toLowerCase();
+                const haystack = `${l.model || ""} ${l.provider || ""} ${l.errorMessage || ""}`.toLowerCase();
+                if (!haystack.includes(needle)) return false;
+              }
+              return true;
+            });
+
+            return (
+              <>
+                <div className="row" style={{ flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+                  <select
+                    value={logFilters.provider}
+                    onChange={(e) => setLogFilters((f) => ({ ...f, provider: e.target.value }))}
+                    className="input"
+                    style={{ width: "auto" }}
                   >
-                    <td>{l.type}</td>
-                    <td>{l.provider}</td>
-                    <td style={{ fontSize: 12 }}>{l.model}</td>
-                    <td>{l.ok ? "✅" : l.errorMessage ? "❌ (tap for detail)" : "❌"}</td>
-                    <td>{l.latencyMs}ms</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                    <option value="all">All providers</option>
+                    {providerOptions.map((p) => (
+                      <option key={p} value={p}>
+                        {p}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    value={logFilters.type}
+                    onChange={(e) => setLogFilters((f) => ({ ...f, type: e.target.value }))}
+                    className="input"
+                    style={{ width: "auto" }}
+                  >
+                    <option value="all">All types</option>
+                    <option value="text">text</option>
+                    <option value="image">image</option>
+                    <option value="audio">audio</option>
+                  </select>
+                  <select
+                    value={logFilters.status}
+                    onChange={(e) => setLogFilters((f) => ({ ...f, status: e.target.value }))}
+                    className="input"
+                    style={{ width: "auto" }}
+                  >
+                    <option value="all">All statuses</option>
+                    <option value="ok">✅ OK only</option>
+                    <option value="failed">❌ Failed only</option>
+                  </select>
+                  <input
+                    placeholder="Search model/error..."
+                    value={logFilters.search}
+                    onChange={(e) => setLogFilters((f) => ({ ...f, search: e.target.value }))}
+                    className="input"
+                    style={{ flex: 1, minWidth: 160 }}
+                  />
+                  {(logFilters.provider !== "all" || logFilters.type !== "all" || logFilters.status !== "all" || logFilters.search) && (
+                    <button
+                      onClick={() => setLogFilters({ provider: "all", type: "all", status: "all", search: "" })}
+                      className="btn btn-ghost btn-sm"
+                    >
+                      Clear filters
+                    </button>
+                  )}
+                </div>
+                <p className="muted" style={{ marginTop: 0, fontSize: 12 }}>
+                  Showing {filtered.length} of {stats.recentLogs.length}
+                </p>
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>Provider</th>
+                        <th>Model</th>
+                        <th>OK</th>
+                        <th>Latency</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map((l) => (
+                        <tr
+                          key={l.id}
+                          onClick={() => !l.ok && l.errorMessage && setErrorModalKey({ id: `${l.provider} · ${l.model}`, status: "failed", lastError: l.errorMessage })}
+                          style={!l.ok && l.errorMessage ? { cursor: "pointer" } : undefined}
+                        >
+                          <td>{l.type}</td>
+                          <td>{l.provider}</td>
+                          <td style={{ fontSize: 12 }}>{l.model}</td>
+                          <td>{l.ok ? "✅" : l.errorMessage ? "❌ (tap for detail)" : "❌"}</td>
+                          <td>{l.latencyMs}ms</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            );
+          })()}
         </section>
       )}
 

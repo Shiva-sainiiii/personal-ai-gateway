@@ -22,6 +22,30 @@
   --nav-height: 56px;
 }
 
+/* Light theme — toggled by setting data-theme="light" on <html>.
+   Same variable names, so every component that already reads var(--bg) etc.
+   gets the light palette for free with zero per-component changes. */
+[data-theme="light"] {
+  --bg: #f5f6f8;
+  --bg-elevated: #ffffff;
+  --bg-input: #f0f1f4;
+  --border: #dde1e7;
+  --border-soft: #c9cfd8;
+  --text: #14181f;
+  --text-dim: #4b5563;
+  --text-faint: #6b7280;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #e0e9ff;
+  --success: #16a34a;
+  --success-bg: #dcfce7;
+  --success-border: #86efac;
+  --warn: #ca8a04;
+  --danger: #dc2626;
+  --danger-bg: #fee2e2;
+  --danger-strong: #dc2626;
+}
+
 * {
   box-sizing: border-box;
 }

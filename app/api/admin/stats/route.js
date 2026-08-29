@@ -74,6 +74,28 @@ export async function GET(req) {
   const known = knownModelIds();
   const modelScores = modelScoresSnap.docs.map((doc) => ({ id: doc.id, ...doc.data(), isKnownModel: known.has(doc.id) }));
 
+  // Per-key remaining quota % (today, UTC) — this is the live data that now
+  // actually drives routing order (see lib/usageLimits.js's
+  // rankKeysByRemainingQuota, wired into orchestrator.js), surfaced here so
+  // the dashboard shows the SAME numbers the router is acting on, not a
+  // separate display-only estimate.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const keyIds = keysSnap.docs.map((doc) => doc.id);
+  const usageDocIds = keyIds.map((id) => `${id}_${todayStr}`);
+  const usageRefs = usageDocIds.map((id) => db().collection("usageCounters").doc(id));
+  const usageSnaps = usageRefs.length ? await db().getAll(...usageRefs) : [];
+  const remainingQuotaByKey = {};
+  usageSnaps.forEach((snap, i) => {
+    const keyId = keyIds[i];
+    const keyDoc = keysSnap.docs.find((d) => d.id === keyId);
+    const provider = keyDoc?.data().provider;
+    const limitInfo = DAILY_FREE_LIMITS[provider];
+    const used = snap.exists ? snap.data().used || 0 : 0;
+    const remainingPct =
+      !limitInfo || limitInfo.amount == null ? null : Math.max(0, Math.round(((limitInfo.amount - used) / limitInfo.amount) * 100));
+    remainingQuotaByKey[keyId] = { used, limit: limitInfo?.amount ?? null, remainingPct };
+  });
+
   return NextResponse.json({
     byProvider,
     last24h: { success: successCount, failed: failCount, total: successCount + failCount },
@@ -82,6 +104,7 @@ export async function GET(req) {
     usageByProvider,
     activeAccountsByProvider,
     dailyFreeLimits: DAILY_FREE_LIMITS,
+    remainingQuotaByKey,
   });
 }
 

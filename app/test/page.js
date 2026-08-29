@@ -51,8 +51,11 @@ export default function TestPage() {
   const [visionResult, setVisionResult] = useState(null);
   const [audioResult, setAudioResult] = useState(null);
   const [audioFileName, setAudioFileName] = useState(null);
+  const [streamText, setStreamText] = useState("");
+  const [streamMeta, setStreamMeta] = useState(null);
+  const streamAbortRef = useState({ current: null })[0];
 
-  const [loading, setLoading] = useState({ text: false, imageGen: false, vision: false, audio: false });
+  const [loading, setLoading] = useState({ text: false, imageGen: false, vision: false, audio: false, stream: false });
 
   async function runRequest({ url, init, setResult, loadingKey }) {
     setLoading((l) => ({ ...l, [loadingKey]: true }));
@@ -76,7 +79,7 @@ export default function TestPage() {
   }
 
   function testText() {
-    runRequest({
+    return runRequest({
       url: "/api/v1/chat",
       init: {
         method: "POST",
@@ -88,8 +91,68 @@ export default function TestPage() {
     });
   }
 
+  async function testStream() {
+    setLoading((l) => ({ ...l, stream: true }));
+    setStreamText("");
+    setStreamMeta(null);
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+    const started = Date.now();
+
+    try {
+      const res = await fetch("/api/v1/chat/stream", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${textKey}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ messages: [{ role: "user", content: prompt }] }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const json = await res.json().catch(() => ({ error: "Stream request failed." }));
+        setStreamMeta({ status: res.status, error: json.error, attempts: json.attempts });
+        setLoading((l) => ({ ...l, stream: false }));
+        return;
+      }
+
+      let firstTokenMs = null;
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n\n");
+        buffer = lines.pop();
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith("data:")) continue;
+          const json = JSON.parse(trimmed.slice(5).trim());
+          if (json.delta) {
+            if (firstTokenMs === null) firstTokenMs = Date.now() - started;
+            setStreamText((t) => t + json.delta);
+          }
+          if (json.done) {
+            setStreamMeta({ status: 200, totalMs: Date.now() - started, firstTokenMs });
+          }
+        }
+      }
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        setStreamMeta({ error: err.message });
+      }
+    } finally {
+      setLoading((l) => ({ ...l, stream: false }));
+    }
+  }
+
+  function stopStream() {
+    streamAbortRef.current?.abort();
+  }
+
   function testImageGeneration() {
-    runRequest({
+    return runRequest({
       url: "/api/v1/image",
       init: {
         method: "POST",
@@ -106,6 +169,16 @@ export default function TestPage() {
     if (visionPreviewUrl) URL.revokeObjectURL(visionPreviewUrl);
     setVisionPreviewUrl(file ? URL.createObjectURL(file) : null);
   }
+
+  // Revoke the object URL on unmount too, not just on next-file-change —
+  // otherwise navigating away from this page while a preview is showing
+  // leaks the blob for the remainder of the session.
+  useEffect(() => {
+    return () => {
+      if (visionPreviewUrl) URL.revokeObjectURL(visionPreviewUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visionPreviewUrl]);
 
   async function testVision() {
     if (!visionFile) return;
@@ -126,9 +199,29 @@ export default function TestPage() {
     });
   }
 
+  const [runningAll, setRunningAll] = useState(false);
+
+  // Runs every test that doesn't need a manually-picked file (Vision and
+  // Audio-file transcription are excluded since there's no file to pick
+  // automatically). Sequential rather than parallel so results land one at
+  // a time and are easy to read as they complete, and so the "Run All"
+  // spinner reflects genuine overall progress rather than a burst of
+  // simultaneous requests hitting the same keys at once.
+  async function runAllTests() {
+    setRunningAll(true);
+    try {
+      if (textKey) await testText();
+      if (textKey) await testStream();
+      if (imageKey) await testImageGeneration();
+      if (audioKey) await testAudioAuthOnly();
+    } finally {
+      setRunningAll(false);
+    }
+  }
+
   function testAudioAuthOnly() {
     setAudioFileName(null);
-    runRequest({
+    return runRequest({
       url: "/api/v1/audio",
       init: {
         method: "POST",
@@ -173,6 +266,25 @@ export default function TestPage() {
         </div>
       )}
 
+      <div className="card" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <strong>Run All Tests</strong>
+          <p className="muted" style={{ margin: "4px 0 0" }}>
+            Text, Stream, aur Image Generation ek ke baad ek chalayega (jinki key di hai). Vision aur
+            Audio-file test alag se chalane honge kyunki unme manually file choose karni padti hai.
+          </p>
+        </div>
+        <button onClick={runAllTests} disabled={runningAll || (!textKey && !imageKey && !audioKey)} className="btn">
+          {runningAll ? (
+            <>
+              <span className="spinner" /> Running...
+            </>
+          ) : (
+            "▶ Run All"
+          )}
+        </button>
+      </div>
+
       {/* TEXT */}
       <section className="card">
         <div className="row" style={{ justifyContent: "space-between" }}>
@@ -199,6 +311,42 @@ export default function TestPage() {
           )}
         </button>
         {textResult && <Result r={textResult} filePrefix="text" />}
+      </section>
+
+      {/* STREAMING */}
+      <section className="card">
+        <h2 style={{ marginTop: 0 }}>1b. Real Streaming (/api/v1/chat/stream)</h2>
+        <p className="hint">
+          Same prompt (upar wale se), lekin real token-by-token streaming — text turant type hote
+          hue dikhega, poora response wait nahi karna padega.
+        </p>
+        <div className="row">
+          <button onClick={testStream} disabled={!textKey || loading.stream} className="btn">
+            {loading.stream ? (
+              <>
+                <span className="spinner" /> Streaming...
+              </>
+            ) : (
+              "Test Stream"
+            )}
+          </button>
+          {loading.stream && (
+            <button onClick={stopStream} className="btn btn-danger">
+              Stop
+            </button>
+          )}
+        </div>
+        {(streamText || streamMeta) && (
+          <div className="result-box result-ok" style={{ marginTop: 10 }}>
+            {streamMeta?.firstTokenMs != null && (
+              <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 6 }}>
+                First token: {streamMeta.firstTokenMs}ms · Total: {streamMeta.totalMs}ms
+              </div>
+            )}
+            {streamMeta?.error && <div style={{ color: "#f87171" }}>Error: {streamMeta.error}</div>}
+            <div style={{ whiteSpace: "pre-wrap" }}>{streamText}</div>
+          </div>
+        )}
       </section>
 
       {/* IMAGE GENERATION */}

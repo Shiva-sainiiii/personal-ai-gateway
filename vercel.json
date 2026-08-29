@@ -3,6 +3,15 @@
     "app/api/v1/chat/route.js": { "maxDuration": 60 },
     "app/api/v1/chat/stream/route.js": { "maxDuration": 60 },
     "app/api/v1/image/route.js": { "maxDuration": 60 },
-    "app/api/v1/audio/route.js": { "maxDuration": 60 }
-  }
+    "app/api/v1/audio/route.js": { "maxDuration": 60 },
+    "app/api/v1/speech/route.js": { "maxDuration": 60 },
+    "app/api/v1/embeddings/route.js": { "maxDuration": 60 },
+    "app/api/cron/cleanup-logs/route.js": { "maxDuration": 60 }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/cleanup-logs",
+      "schedule": "0 3 * * *"
+    }
+  ]
 }

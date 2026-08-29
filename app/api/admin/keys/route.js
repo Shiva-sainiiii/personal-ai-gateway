@@ -3,6 +3,7 @@ import { requireAdmin } from "../../../../lib/auth.js";
 import { encrypt } from "../../../../lib/crypto.js";
 import { db } from "../../../../lib/firebaseAdmin.js";
 import { FieldValue } from "firebase-admin/firestore";
+import { alertProviderRecovered } from "../../../../lib/alerts.js";
 
 export const runtime = "nodejs";
 
@@ -115,7 +116,13 @@ export async function PATCH(req) {
     cooldownUntil: null,
     failCount: 0,
     lastError: null,
+    disabledAt: null,
+    consecutive403: 0,
   });
+
+  // keyId is "{provider}_{accountLabel}" by convention — see keyManager.js.
+  const provider = id.split("_")[0];
+  alertProviderRecovered(provider).catch(() => {});
 
   return NextResponse.json({ ok: true });
 }

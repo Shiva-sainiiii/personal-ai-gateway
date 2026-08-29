@@ -20,6 +20,16 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
+      <head>
+        {/* Applies the saved theme before first paint, so switching pages or
+            reloading doesn't flash dark-then-light (or vice versa) while
+            Navbar's useEffect hasn't run yet. */}
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem("aigateway_theme");if(t==="light"||t==="dark"){document.documentElement.setAttribute("data-theme",t);}}catch(e){}})();`,
+          }}
+        />
+      </head>
       <body>
         <Navbar />
         {children}
