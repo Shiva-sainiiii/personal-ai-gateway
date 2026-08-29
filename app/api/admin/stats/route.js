@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "../../../../lib/auth.js";
 import { db } from "../../../../lib/firebaseAdmin.js";
-import { DAILY_FREE_LIMITS } from "../../../../lib/usageLimits.js";
+import { DAILY_FREE_LIMITS, PER_MODEL_LIMITS } from "../../../../lib/usageLimits.js";
 import { MODEL_REGISTRY } from "../../../../lib/modelRegistry.js";
 
 export const runtime = "nodejs";
@@ -104,6 +104,11 @@ export async function GET(req) {
     usageByProvider,
     activeAccountsByProvider,
     dailyFreeLimits: DAILY_FREE_LIMITS,
+    // Per-model ceilings for "per-model"/"mixed" scope providers (e.g. Groq)
+    // where dailyFreeLimits above has no single account-wide number to show —
+    // the dashboard needs this to display real per-model headroom instead of
+    // a blank/null limit for those providers.
+    perModelLimits: PER_MODEL_LIMITS,
     remainingQuotaByKey,
   });
 }

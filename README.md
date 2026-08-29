@@ -99,6 +99,8 @@ Ye script master key hashes Firestore me daal dega. Chahe to isi script se apni 
 
 Yahi panel se tu live stats bhi dekh sakta hai: kaunsi key active hai, kaunsi cooldown me hai, kitne success/fail hue.
 
+⚠️ **Cerebras (verified Aug 2026)**: Ab isme koi standing free tier nahi hai — signup pe sirf ek $5 ka free-**trial** credit milta hai jo 30 dino baad expire ho jata hai, aur ek **verified payment method add karna ab mandatory hai**, warna account "inactive" rehta hai aur API/Playground access hi nahi milta. Agar Cerebras ki key add karne ke baad turant fail ho rahi hai (401/402), sabse pehle apne Cerebras account me payment method verify karo — key khud galat hone ki zaroorat nahi.
+
 ## Step 7 — Apne Doosre Projects Se Call Karo
 
 ```javascript
@@ -338,6 +340,45 @@ Agar zaroorat pade to Upstash abhi bhi add kar sakte hain — cache/coalescing/r
 - **Test page (MVP) strong**: master keys ab yahan bhi `sessionStorage` me cached rehti hain,
   har request ka latency dikhta hai, fail hone par attempt-list table dikhta hai (kaunsa
   provider/status fail hua), image preview aur raw-response collapsible section.
+
+## Round 6 — Quota Scope Fix + Aug 2026 Rate-Limit Verification
+
+Perplexity se 5 providers ke rate-limits official docs se verify karwaye (Aug 2026) —
+poora research trail `docs/PROVIDER_LIMITS.md` me hai. Sabse bada gap jo mila: `quota_scope`
+concept ab tak sirf ek assumption tha, ab explicit hai aur code me sahi jagah lagaya gaya:
+
+- **Bug fix (bada wala)**: `modelRegistry.js` ka ek comment galat keh raha tha ki Google AI
+  Studio account-wide rate-limit karta hai (OpenRouter jaisa). Verified docs confirm karte
+  hain ki Google **per-model** hai — har Gemini/Gemma model ki apni alag RPM+TPM+RPD bucket
+  hai, OpenRouter jaisa shared pool nahi. Isse routing ka mental model fix kiya.
+- **`lib/usageLimits.js`**: naya `PER_MODEL_LIMITS` export + `getPerModelLimit()` helper —
+  Groq ke exact per-model RPM/RPD/TPM/TPD numbers ab yahan structured hain (pehle sirf ek
+  flat 500K TPD guess tha). `DAILY_FREE_LIMITS` har entry me ab `scope` field bhi hai
+  (`"account-wide"` | `"per-model"`), aur jin providers ka koi single flat number nahi ho
+  sakta (Groq, Google AI Studio) unka `amount: null` hai taaki galat bucket track na ho.
+- **Cerebras — payment method ab mandatory**: verified — Cerebras ka ab koi standing free
+  tier nahi hai, sirf $5 ka 30-din-expiring free-trial credit hai, aur account activate
+  karne ke liye verified payment method zaroori hai. `providers.js` + README me flag kiya
+  taaki agar Cerebras key turant 401/402 de, "key galat hai" na sochke pehle payment method
+  check karo.
+- **`lib/rateLimitSaver.js`**: OpenRouter ka RPM check missing tha (sirf RPD check tha, wo bhi
+  stale 45/day estimate ke saath). Ab dono checks hain — 18 RPM aur 45 RPD (OpenRouter ke
+  verified 20 RPM / 50 RPD se thoda neeche, headroom ke liye) — aur ek key kisi bhi window
+  trip kare to skip hoti hai.
+- **`lib/orchestrator.js`**: quota-recording logic fix — pehle Groq/Cerebras dono ko
+  "token-metered, ek hi account-wide bucket me count karo" treat kiya jata tha, jo Groq ke
+  per-model scope ke against galat tha. Ab sirf genuinely account-wide providers
+  (OpenRouter, Cloudflare) `recordUsage` call karte hain.
+- **Model lists refresh**: OpenRouter ki `:free` list Aug 2026 ke verified catalog se update
+  (kuch purane ids jo re-confirm nahi ho paaye hataye, naye jaise `z-ai/glm-5.2:free`,
+  `minimax/minimax-m3:free`, `thinkingmachines/inkling:free` add kiye). Cloudflare text list
+  me `@cf/meta/llama-3.3-70b-instruct-fp8-fast` aur vision-capable
+  `@cf/meta/llama-4-scout-17b-16e-instruct` add kiye (purana id fallback ke roop me rakha,
+  unverified).
+- **Jaan-bujh kar NAHI kiya**: Cloudflare ka naya vision model `VISION` pool me add nahi
+  kiya, kyunki `providers.cloudflare.call()` abhi `imageUrl`/`imageBase64` forward hi nahi
+  karta — pehle wo wiring chahiye, warna image silently drop ho jayegi. Details
+  `lib/modelRegistry.js` ke VISION comment aur `docs/PROVIDER_LIMITS.md` me.
 
 ## File Structure
 
